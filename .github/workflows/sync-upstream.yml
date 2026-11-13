@@ -1,0 +1,37 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 台灣時間每天 07:30（UTC 23:30），在 08:00 盤前快報與 14:30 選股之前
+    - cron: "30 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Merge upstream (kevin801221/stock-strategies-only:main)
+        env:
+          # 有設 SYNC_PAT 就用它（可同步 workflow 檔變更）；沒有就退回 GITHUB_TOKEN
+          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          resp=$(curl -sS -w '\n%{http_code}' -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/merge-upstream" \
+            -d '{"branch":"main"}')
+          code=$(echo "$resp" | tail -n1)
+          body=$(echo "$resp" | sed '$d')
+          echo "HTTP $code"
+          echo "$body"
+          if [ "$code" = "409" ]; then
+            echo "::error::與上游有衝突，請到 GitHub 頁面按 Sync fork 手動處理"
+            exit 1
+          fi
+          [ "$code" = "200" ] || exit 1
