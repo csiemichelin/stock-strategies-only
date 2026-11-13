@@ -1,0 +1,23 @@
+name: LINE Smoke Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  send-test-message:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Send LINE test message
+        env:
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          test -n "$LINE_CHANNEL_TOKEN" || (echo "Missing LINE_CHANNEL_TOKEN" && exit 1)
+          test -n "$LINE_USER_ID" || (echo "Missing LINE_USER_ID" && exit 1)
+          body=$(jq -n --arg to "$LINE_USER_ID" --arg t "GitHub Actions LINE smoke test OK ($GITHUB_REPOSITORY #$GITHUB_RUN_ID)" \
+            '{to:$to, messages:[{type:"text", text:$t}]}')
+          code=$(curl -sS -o resp.json -w '%{http_code}' -X POST https://api.line.me/v2/bot/message/push \
+            -H "Authorization: Bearer $LINE_CHANNEL_TOKEN" -H "Content-Type: application/json" -d "$body")
+          cat resp.json; echo; echo "HTTP $code"
+          [ "$code" = "200" ]
