@@ -45,6 +45,11 @@ from api.services.runs import RunBusy, RunManager
 app = FastAPI(title="Stock Strategies API", version="1.1.0")
 runs = RunManager()
 
+# 雲端部署附加（API_KEY / STRATEGY_STORE=sheet；未設定時不影響本機）
+from api.cloud import install as install_cloud  # noqa: E402
+
+install_cloud(app)
+
 
 @app.exception_handler(loader.StrategyError)
 async def strategy_error(_request: Request, exc: loader.StrategyError):
