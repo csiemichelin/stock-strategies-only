@@ -1,0 +1,27 @@
+# Render Blueprint：FastAPI 後端（免費方案）
+# 前端（web/）部署在 Vercel，透過 web/middleware.ts 代理 /api/* 並附上 API_KEY
+services:
+  - type: web
+    name: stock-strategies-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run --no-dev uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: STRATEGY_STORE
+        value: sheet
+      - key: API_KEY
+        sync: false
+      - key: FINMIND_TOKEN
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_CREDS_JSON
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
