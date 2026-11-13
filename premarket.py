@@ -23,8 +23,6 @@ from stock_strategies.notify import send_telegram, format_premarket
 
 REQUIRED_ENV = [
     "FINMIND_TOKEN",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
     "GOOGLE_SHEET_ID",
     "GOOGLE_CREDS_JSON",
 ]
