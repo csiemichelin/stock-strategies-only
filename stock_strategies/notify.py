@@ -6,9 +6,14 @@ import numpy as np
 import requests
 
 from .config import CONFIG, TELEGRAM_API
+from .line_push import line_enabled, send_line
 
 
 def send_telegram(text: str):
+    if line_enabled():
+        return send_line(text)
+    if not (os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")):
+        sys.exit("❌ 未設定推播管道：需要 LINE_CHANNEL_TOKEN/LINE_USER_ID 或 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID")
     url = TELEGRAM_API.format(token=os.environ["TELEGRAM_BOT_TOKEN"])
     payload = {
         "chat_id": os.environ["TELEGRAM_CHAT_ID"],
