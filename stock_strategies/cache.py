@@ -65,6 +65,9 @@ def clear_cache(dataset: str | None = None, data_id: str | None = None) -> int:
 
 
 _last_request_monotonic = 0.0
+_quota_block_until = 0.0   # 額度用完後一段時間內直接失敗，不再每檔重試 75 秒
+QUOTA_COOLDOWN = 600
+QUOTA_MSG = "FinMind 免費額度暫時用完（每小時 600 次），約 {m} 分鐘後再試"
 
 
 def _throttle() -> None:
@@ -94,14 +97,20 @@ def _is_rate_limited(resp) -> bool:
 def _rate_limited_get(params: dict, timeout: int, max_retries: int) -> dict:
     """打 FinMind，處理限流（402/429/body status!=200 含 'request'）：
     指數退避重試，耗盡 raise FinMindRateLimitError。回傳已解析的 json dict。"""
+    global _quota_block_until
+    left = _quota_block_until - time.monotonic()
+    if left > 0:
+        raise FinMindRateLimitError(QUOTA_MSG.format(m=max(1, round(left / 60))))
     attempt = 0
     while True:
         _throttle()
         resp = requests.get(FINMIND_URL, params=params, timeout=timeout)
         if _is_rate_limited(resp):
             if attempt >= max_retries:
+                _quota_block_until = time.monotonic() + QUOTA_COOLDOWN
                 raise FinMindRateLimitError(
-                    f"FinMind 限流重試 {attempt} 次仍失敗: {params.get('dataset')}"
+                    f"FinMind 限流重試 {attempt} 次仍失敗: {params.get('dataset')}；"
+                    + QUOTA_MSG.format(m=QUOTA_COOLDOWN // 60)
                 )
             backoff = min(RATE_LIMIT_BACKOFF_BASE * (2 ** attempt), 120)
             time.sleep(backoff)
@@ -109,6 +118,10 @@ def _rate_limited_get(params: dict, timeout: int, max_retries: int) -> dict:
             continue
         resp.raise_for_status()
         return resp.json()
+
+
+# 非每日資料：抓過後幾天內直接用快取（空資料也算，例如 ETF 沒有財報）
+REFETCH_AFTER_DAYS = {"quarterly": 3, "monthly": 1, "weekly": 1, "static": 7}
 
 
 def _freq_of(dataset: str) -> str:
@@ -157,8 +170,15 @@ def _is_fresh(dataset: str, data_id: str, fresh_days: int | None,
     try:
         meta = json.loads(mp.read_text())
         max_date = pd.to_datetime(meta.get("max_date"))
+        fetched = pd.to_datetime(meta.get("fetched_at"))
     except Exception:
         return False
+    # 季報／月營收等：資料日期本來就會落後很多，用「多久前抓的」判斷，避免每次都重抓（耗額度）
+    recent = REFETCH_AFTER_DAYS.get(_freq_of(dataset))
+    if recent is not None and fresh_days is None and not pd.isna(fetched):
+        age = pd.Timestamp.now(tz="UTC") - (fetched if fetched.tzinfo else fetched.tz_localize("UTC"))
+        if age <= pd.Timedelta(days=recent):
+            return True
     if pd.isna(max_date):
         return False
     days = fresh_days if fresh_days is not None else CACHE_FRESH_DAYS[_freq_of(dataset)]
@@ -224,6 +244,8 @@ def fetch_finmind_cached(
         df = df.reset_index(drop=True)
         if len(df):
             _write_cache(dataset, data_id, df)
+        elif _freq_of(dataset) != "daily":
+            _write_cache(dataset, data_id, df)  # 記住「這檔沒有這種資料」，幾天內不再問
 
     # 切片
     if "date" in df.columns and len(df):
