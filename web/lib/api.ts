@@ -45,6 +45,7 @@ export type RunResult = {
   downgraded: number;
   summary: { total: number; buy: number; watch: number; skip: number; error: number };
   results: StockResult[];
+  reused?: { finished_at: string; data_day: string };
 };
 export type RunJob = {
   id: string;
