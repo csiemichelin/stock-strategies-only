@@ -120,8 +120,9 @@ def _rate_limited_get(params: dict, timeout: int, max_retries: int) -> dict:
         return resp.json()
 
 
-# 非每日資料：抓過後幾天內直接用快取（空資料也算，例如 ETF 沒有財報）
-REFETCH_AFTER_DAYS = {"quarterly": 3, "monthly": 1, "weekly": 1, "static": 7}
+# 非每日資料（財報、月營收…）：每天重抓一次；台灣時間「今天」已抓過就直接用快取
+# （空資料也算，例如 ETF 沒有財報，當天不再重問）
+SAME_DAY_FREQS = ("quarterly", "monthly", "weekly", "static")
 
 
 def _freq_of(dataset: str) -> str:
@@ -173,12 +174,13 @@ def _is_fresh(dataset: str, data_id: str, fresh_days: int | None,
         fetched = pd.to_datetime(meta.get("fetched_at"))
     except Exception:
         return False
-    # 季報／月營收等：資料日期本來就會落後很多，用「多久前抓的」判斷，避免每次都重抓（耗額度）
-    recent = REFETCH_AFTER_DAYS.get(_freq_of(dataset))
-    if recent is not None and fresh_days is None and not pd.isna(fetched):
-        age = pd.Timestamp.now(tz="UTC") - (fetched if fetched.tzinfo else fetched.tz_localize("UTC"))
-        if age <= pd.Timedelta(days=recent):
-            return True
+    # 財報／月營收等：資料日期本來就落後很多，改看「今天抓過沒」——當天抓過就用快取，隔天重抓
+    if _freq_of(dataset) in SAME_DAY_FREQS and fresh_days is None:
+        if pd.isna(fetched):
+            return False
+        tw = "Asia/Taipei"
+        fetched_day = (fetched if fetched.tzinfo else fetched.tz_localize("UTC")).tz_convert(tw).date()
+        return fetched_day == pd.Timestamp.now(tz=tw).date()
     if pd.isna(max_date):
         return False
     days = fresh_days if fresh_days is not None else CACHE_FRESH_DAYS[_freq_of(dataset)]
