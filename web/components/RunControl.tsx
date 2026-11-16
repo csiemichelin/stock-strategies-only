@@ -22,7 +22,7 @@ export default function RunControl({ run, disabled = false }: { run: Controller;
         <span className="shrink-0 font-mono text-muted">{job?.completed ?? 0} / {total ?? "—"}</span>
       </div>
       <progress className="h-1.5 w-full" max={total || 1} value={total ? job?.completed ?? 0 : undefined} aria-label="選股進度" />
-      <p className="mt-2 text-xs text-muted">依觀察池大小需要數分鐘。重新整理後可繼續查看進度。</p>
+      <p className="mt-2 text-xs text-muted">{job?.strategy?.name ? `策略：${job.strategy.name}・` : ""}依觀察池大小需要數分鐘。所有裝置都會看到同一個進度，完成後結果也會推到 LINE。</p>
     </div>}
     {error && <ErrorCard message={error} />}
   </div>;
