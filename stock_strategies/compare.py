@@ -106,4 +106,5 @@ def run(capital: float, start_date: str, strategy: dict, *, progress=None, cance
         "result": strat,
         "benchmark": {"stock_id": BENCHMARK_ID, "name": BENCHMARK_NAME, **bench},
         "trades": final_state["trades"],
+        "skipped": state.get("skipped", []),
     }
