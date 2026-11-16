@@ -21,23 +21,70 @@ def _num(v):
     return f"{f:,.2f}".rstrip("0").rstrip(".")
 
 
-def _market_line(market: dict | None) -> str:
-    if not market:
-        return "大盤：資料暫缺"
-    if market.get("bullish", True):
-        return "大盤：🟢 站上月線，可依訊號操作"
-    return "大盤：🔴 跌破月線，先別進場（買進訊號已降為觀察）"
+def _index_moves() -> tuple[float | None, float | None]:
+    """加權指數今日、近 5 日漲跌幅（%）；取不到回 None。沿用 market.py 的快取資料。"""
+    try:
+        from .datasources import get_index_history
+
+        close = get_index_history("TAIEX")["close"].astype(float)
+        if len(close) < 6:
+            return None, None
+        return (close.iloc[-1] / close.iloc[-2] - 1) * 100, (close.iloc[-1] / close.iloc[-6] - 1) * 100
+    except Exception:
+        return None, None
 
 
-def format_daily_brief(signals: list[dict], market: dict | None = None, night_note: str | None = None) -> str:
+def _market_lines(market: dict | None) -> list[str]:
+    if not market or market.get("close") is None:
+        return ["大盤：資料暫缺"]
+    close, ma = float(market["close"]), float(market.get("ma20") or 0)
+    bullish = market.get("bullish", True)
+    day, week = _index_moves()
+    moves = "｜".join(x for x in (
+        f"今日 {day:+.2f}%" if day is not None else "",
+        f"5 日 {week:+.2f}%" if week is not None else "",
+    ) if x)
+    head = f"大盤：{'🟢' if bullish else '🔴'} 加權 {close:,.0f}" + (f"（{moves}）" if moves else "")
+    lines = [head]
+    if ma:
+        gap = (close / ma - 1) * 100
+        verdict = "可依訊號操作" if bullish else "先別進場，買進訊號已降為觀察"
+        lines.append(f"　月線 {ma:,.0f}，{'站上' if bullish else '跌破'} {gap:+.1f}% → {verdict}")
+    return lines
+
+
+def _pool_line(signals: list[dict]) -> str | None:
+    trends = [s["trend"] for s in signals if s.get("trend")]
+    if not trends:
+        return None
+    up = sum(t.get("chg_5d", 0) > 0 for t in trends)
+    above = sum(bool(t.get("above_ma20")) for t in trends)
+    avg = sum(t.get("chg_5d", 0) for t in trends) / len(trends)
+    return f"觀察池 {len(trends)} 檔：5 日上漲 {up}｜站上月線 {above}｜平均 {avg:+.1f}%"
+
+
+def _night_pct(night_note: str | None) -> str | None:
+    import re
+
+    m = re.search(r"夜盤 ([+-]\d+(?:\.\d+)?%)", night_note or "")
+    return m.group(1) if m else None
+
+
+def format_daily_brief(
+    signals: list[dict], market: dict | None = None, night_note: str | None = None, header: str | None = None
+) -> str:
     today = datetime.now()
     wd = "一二三四五六日"[today.weekday()]
     buys = [s for s in signals if s.get("action") == "BUY"]
     watches = [s for s in signals if s.get("action") == "WATCH"]
 
-    lines = [f"📊 {today:%m/%d}（{wd}）收盤選股", _market_line(market)]
-    if night_note and "大跌" in night_note:
-        lines.append("夜盤：🔴 昨晚大跌，買進訊號已保守處理")
+    lines = [header or f"📊 {today:%m/%d}（{wd}）收盤選股", *_market_lines(market)]
+    pool = _pool_line(signals)
+    if pool:
+        lines.append(pool)
+    night = _night_pct(night_note)
+    if night:
+        lines.append(f"昨晚夜盤 {night}" + ("，買進訊號已保守處理" if "降為 WATCH" in (night_note or "") else ""))
     lines.append("")
 
     if buys:
