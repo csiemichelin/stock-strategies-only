@@ -24,6 +24,25 @@ export function useRun(strategyId: string) {
     return () => { generation.current++; };
   }, [storageKey]);
 
+  // 沒有追蹤中的任務時，定期查詢後端是否有人（其他裝置）正在選股，有就接上進度條
+  const jobActive = active(job);
+  const awaitingJob = !!jobId && !job;
+  useEffect(() => {
+    if (jobActive || awaitingJob) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function discover() {
+      try {
+        const { job: latest } = await api.latestRun(controller.signal);
+        if (controller.signal.aborted) return;
+        if (latest && active(latest) && latest.id !== jobId) { setJob(latest); setJobId(latest.id); return; }
+      } catch { /* 後端未支援或暫時無法連線：略過 */ }
+      if (!controller.signal.aborted) timer = setTimeout(discover, 10_000);
+    }
+    discover();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [jobId, jobActive, awaitingJob]);
+
   useEffect(() => {
     if (!jobId) return;
     const controller = new AbortController();
@@ -65,7 +84,15 @@ export function useRun(strategyId: string) {
       setJob(next);
       setJobId(next.id);
     } catch (err) {
-      if (version === generation.current) setError(errorMessage(err));
+      if (version !== generation.current) return;
+      if (err instanceof ApiError && err.status === 409) {
+        // 已有人在選股：直接顯示那個任務的進度，不重複觸發
+        try {
+          const { job: latest } = await api.latestRun();
+          if (latest && active(latest)) { setJob(latest); setJobId(latest.id); return; }
+        } catch {}
+      }
+      setError(errorMessage(err));
     } finally {
       if (version === generation.current) { setStarting(false); pending.current = false; }
     }
