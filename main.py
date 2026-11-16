@@ -36,6 +36,7 @@ from stock_strategies.night_session import (
     night_filter_note,
 )
 from stock_strategies.performance import update_performance, summary as perf_summary
+from stock_strategies.sim import daily_update as run_daily_simulation
 
 
 REQUIRED_ENV = [
@@ -118,6 +119,9 @@ def main():
     except Exception as e:
         print(f"⚠️ Performance 追蹤失敗: {e}", file=sys.stderr)
         stats = None
+
+    # 6b. 模擬帳戶（網頁「模擬」頁開始後才會動作；結果附在 LINE 每日報告最後）
+    run_daily_simulation(results)
 
     # 7. 發送 Telegram
     print("發送 Telegram...")
