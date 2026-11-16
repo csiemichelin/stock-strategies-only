@@ -50,6 +50,9 @@ def _client(tmp_path, monkeypatch, fake_run):
     webstore._memory.clear()
     monkeypatch.delenv("RENDER", raising=False)
     monkeypatch.setattr(compare, "run", fake_run)
+    import api.cloud as cloud
+
+    monkeypatch.setattr(cloud, "finmind_usage", lambda: None)
     backtest_api._last["result"] = None
     backtest_api.job.update(status="idle", error=None)
     app = FastAPI()
@@ -103,3 +106,31 @@ def test_api_validation_and_busy(tmp_path, monkeypatch):
             break
         time.sleep(0.02)
     assert mod.job.snapshot()["status"] == "cancelled"
+
+
+def test_refuses_when_finmind_quota_low(tmp_path, monkeypatch):
+    import api.cloud as cloud
+
+    c, _ = _client(tmp_path, monkeypatch, lambda *a, **k: {})
+    monkeypatch.setattr(cloud, "finmind_usage", lambda: {"used": 580, "limit": 600, "remaining": 20})
+    r = c.post("/api/backtest", json={"start_date": START})
+    assert r.status_code == 429 and "只剩 20 次" in r.json()["detail"]
+
+
+def test_replay_stops_with_clear_message_when_quota_runs_out(monkeypatch):
+    import pandas as pd
+
+    from stock_strategies import cache, datasources, sheet, sim
+
+    monkeypatch.setattr(sheet, "read_watchlist", lambda: [{"stock_id": str(i), "name": "x"} for i in range(10)])
+
+    def no_quota(sid, years):
+        raise cache.FinMindRateLimitError("FinMind 免費額度暫時用完（每小時 600 次），約 5 分鐘後再試")
+
+    monkeypatch.setattr(sim, "_full_history", no_quota)
+    monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: pd.DataFrame())
+    with pytest.raises(RuntimeError, match="額度用完"):
+        sim.replay(10_000, START, {"id": "default", "name": "x"})
+    monkeypatch.setattr(sheet, "read_watchlist", lambda: [])
+    with pytest.raises(RuntimeError, match="加權指數"):
+        sim.replay(10_000, START, {"id": "default", "name": "x"})
