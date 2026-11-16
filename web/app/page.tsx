@@ -6,6 +6,7 @@ import { readCache, writeCache } from "@/lib/cache";
 import { SourceBadge } from "@/components/ActionBadge";
 import { EmptyState, ErrorCard, Skeleton } from "@/components/Feedback";
 import RunControl from "@/components/RunControl";
+import QuotaStatus from "@/components/QuotaStatus";
 import SignalResults from "@/components/SignalResults";
 import { useRun } from "@/hooks/useRun";
 
@@ -79,7 +80,7 @@ export default function Dashboard() {
       {loading ? <Skeleton rows={1} /> : !strategies.length ? <EmptyState title="先建立你的第一個策略"><Link href="/strategies/new" className="btn-primary mt-3">建立策略</Link></EmptyState> : <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
         <div><label htmlFor="strategy" className="label">本次使用策略</label><select id="strategy" className="input" value={picked} disabled={run.running} onChange={e => setPicked(e.target.value)}>{strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
           {selected && <div className="mt-3 space-y-2"><SourceBadge source={selected.source} /><p className="text-xs leading-6 text-muted">{selected.description}</p><Link className="text-xs text-blue-300 hover:underline" href={`/strategies/${selected.id}`}>查看與調整參數 →</Link></div>}
-        </div><div className="lg:border-l lg:border-line lg:pl-6"><RunControl run={run} disabled={!picked} /></div>
+        </div><div className="space-y-3 lg:border-l lg:border-line lg:pl-6"><RunControl run={run} disabled={!picked} /><QuotaStatus need="每天第一次選股約需 300–500 次" /></div>
       </div>}
     </section>
     {run.result ? <>{run.result.reused && <p className="rounded-xl border border-accent/30 bg-accent/5 p-4 text-sm leading-6">
