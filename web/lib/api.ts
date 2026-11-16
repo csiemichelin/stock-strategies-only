@@ -105,5 +105,6 @@ export const api = {
   getWatchlist: (signal?: AbortSignal) => jfetch<{ items: { stock_id: string; name?: string }[]; error?: string }>("/api/watchlist", { signal }),
   startRun: (strategy_id: string) => jfetch<RunJob>("/api/runs", { method: "POST", body: JSON.stringify({ strategy_id }) }),
   getRun: (id: string, signal?: AbortSignal) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { signal }),
+  latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
   cancelRun: (id: string) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
