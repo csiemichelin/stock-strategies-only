@@ -383,6 +383,36 @@ def _remember_run(strategy: dict, result: dict) -> None:
     webstore.save_quietly(f"run_{strategy.get('id')}", saved)
 
 
+_usage_cache: dict = {"at": 0.0, "value": None}
+
+
+def finmind_usage() -> dict | None:
+    """FinMind 本小時已用次數／上限（官方 user_info API，這個查詢本身不算額度）；查不到回 None。"""
+    import requests
+
+    if time.monotonic() - _usage_cache["at"] < 60:
+        return _usage_cache["value"]
+    value = None
+    token = os.environ.get("FINMIND_TOKEN")
+    if token:
+        try:
+            body = requests.get("https://api.web.finmindtrade.com/v2/user_info", params={"token": token},
+                                timeout=8).json()
+            used, limit = body.get("user_count"), body.get("api_request_limit")
+            if isinstance(used, (int, float)) and isinstance(limit, (int, float)) and limit > 0:
+                value = {"used": int(used), "limit": int(limit), "remaining": max(0, int(limit - used))}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[finmind] usage check failed: {exc}", file=sys.stderr)
+    _usage_cache.update(at=time.monotonic(), value=value)
+    return value
+
+
+def _install_usage(app: FastAPI) -> None:
+    @app.get("/api/finmind/usage")
+    def _usage():
+        return {"usage": finmind_usage()}
+
+
 def _install_runs(app: FastAPI, runs) -> None:
     @app.get("/api/runs/latest")
     def _latest():
@@ -431,6 +461,7 @@ def install(app: FastAPI, runs=None) -> None:
     _install_api_key(app)
     _install_sheet_store(app)
     _install_prewarm(app)
+    _install_usage(app)
     if runs is not None:
         _install_runs(app, runs)
     sim_api.install(app)
