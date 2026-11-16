@@ -9,6 +9,8 @@ def _isolate_cache(tmp_path, monkeypatch):
     cache_dir = tmp_path / "finmind_cache"
     monkeypatch.setenv("FINMIND_CACHE_DIR", str(cache_dir))
     monkeypatch.setenv("FINMIND_TOKEN", "test-token")
+    monkeypatch.setenv("PREWARM", "0")          # 不在測試裡背景打真 API
+    monkeypatch.setenv("WEB_CACHE_TTL", "0")    # 回應快取另有專門測試
     yield
 
 
