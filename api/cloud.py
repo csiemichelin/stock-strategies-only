@@ -326,14 +326,61 @@ def run_in_subprocess(runner):
     return wrapped
 
 
-def _remember_run(result: dict) -> None:
-    """最近一次完成的網頁選股，下次開頁直接顯示（存 Google Sheet，重新部署也在）。"""
+def _tw_now():
     from datetime import datetime, timedelta, timezone
 
+    return datetime.now(timezone(timedelta(hours=8)))
+
+
+def data_day(now=None) -> str:
+    """這次選股用到的「資料日」：平日 14:30 收盤資料出來後算今天，否則算前一個平日。
+    同一個資料日、同一套策略參數，選出來的結果相同，不必重跑。"""
+    from datetime import time as dtime, timedelta
+
+    now = now or _tw_now()
+    day = now.date()
+    if now.weekday() < 5 and now.time() >= dtime(14, 30):
+        return day.isoformat()
+    day -= timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day.isoformat()
+
+
+def run_key(strategy: dict, now=None) -> dict:
+    import hashlib
+
+    params = json.dumps(strategy.get("params", {}), sort_keys=True, ensure_ascii=False)
+    return {"data_day": data_day(now), "strategy_id": strategy.get("id"),
+            "params": hashlib.sha1(params.encode("utf-8")).hexdigest()[:12]}
+
+
+def _quota_errors(result: dict) -> int:
+    return sum(1 for r in result.get("results", []) if r.get("action") == "ERROR"
+               and any(("額度" in n or "限流" in n) for n in r.get("risk_notes", [])))
+
+
+def _reusable(strategy: dict) -> dict | None:
+    """同一資料日、同一策略參數已經完整跑過（沒有因額度用完而缺的股票）→ 直接沿用。"""
     from stock_strategies import webstore
 
-    finished = datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds")
-    webstore.save_quietly("last_run", {"finished_at": finished, "result": result})
+    try:
+        saved = webstore.load(f"run_{strategy.get('id')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[webstore] load run failed: {exc}", file=sys.stderr)
+        return None
+    if not saved or saved.get("key") != run_key(strategy) or _quota_errors(saved.get("result", {})):
+        return None
+    return saved
+
+
+def _remember_run(strategy: dict, result: dict) -> None:
+    """最近一次完成的網頁選股，下次開頁直接顯示（存 Google Sheet，重新部署也在）。"""
+    from stock_strategies import webstore
+
+    saved = {"finished_at": _tw_now().isoformat(timespec="seconds"), "key": run_key(strategy), "result": result}
+    webstore.save_quietly("last_run", saved)
+    webstore.save_quietly(f"run_{strategy.get('id')}", saved)
 
 
 def _install_runs(app: FastAPI, runs) -> None:
@@ -356,9 +403,21 @@ def _install_runs(app: FastAPI, runs) -> None:
         original = run_in_subprocess(original)
 
     def runner_with_line(strategy, limit=None, *, progress=None, cancel=None, **kw):
+        if limit is None:
+            saved = _reusable(strategy)
+            if saved:  # 同一時段已選過：讀結果就好，不再打 FinMind、不重複推 LINE
+                result = dict(saved["result"])
+                n = len(result.get("results", []))
+                if progress:
+                    progress(completed=n, total=n, current=None)
+                result["reused"] = {"finished_at": saved["finished_at"], "data_day": saved["key"]["data_day"]}
+                from stock_strategies import webstore
+
+                webstore.save_quietly("last_run", {**saved, "result": result})
+                return result
         result = to_plain(original(strategy, limit, progress=progress, cancel=cancel, **kw))
-        if not (cancel and cancel.is_set()):
-            _remember_run(result)
+        if not (cancel and cancel.is_set()) and limit is None:
+            _remember_run(strategy, result)
             _notify_line(strategy, result)
         return result
 
