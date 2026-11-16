@@ -1,4 +1,4 @@
-"""FinMind 額度：財報快取別每次重抓、空資料也要記住、額度用完快速失敗。"""
+"""FinMind 額度：財報當天抓過就不重抓（隔天重抓）、空資料也要記住、額度用完快速失敗。"""
 import json
 
 import pytest
@@ -38,14 +38,19 @@ def test_quarterly_data_recently_fetched_is_fresh(calls):
     assert len(df) == 1 and calls == ["TaiwanStockFinancialStatements"]  # 季末日很舊，但剛抓過 → 不重抓
 
 
-def test_quarterly_data_refetched_after_a_few_days(calls):
+def test_quarterly_data_refetched_next_day(calls):
+    import pandas as pd
+
     cache.fetch_finmind_cached("TaiwanStockFinancialStatements", "2330", "2022-01-01")
     meta = cache._meta_path("TaiwanStockFinancialStatements", "2330")
     m = json.loads(meta.read_text())
-    m["fetched_at"] = "2026-01-01T00:00:00+00:00"
+    yesterday = pd.Timestamp.now(tz="Asia/Taipei").normalize() - pd.Timedelta(hours=1)  # 台灣時間昨天 23:00
+    m["fetched_at"] = yesterday.tz_convert("UTC").isoformat()
     meta.write_text(json.dumps(m))
     cache.fetch_finmind_cached("TaiwanStockFinancialStatements", "2330", "2022-01-01")
-    assert len(calls) == 2
+    assert len(calls) == 2  # 昨天抓的 → 今天重抓一次
+    cache.fetch_finmind_cached("TaiwanStockFinancialStatements", "2330", "2022-01-01")
+    assert len(calls) == 2  # 今天抓過 → 不再抓
 
 
 def test_empty_result_is_remembered(calls):
