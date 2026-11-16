@@ -192,7 +192,10 @@ def _install_runs(app: FastAPI, runs) -> None:
 
 
 def install(app: FastAPI, runs=None) -> None:
+    from api import sim_api
+
     _install_api_key(app)
     _install_sheet_store(app)
     if runs is not None:
         _install_runs(app, runs)
+    sim_api.install(app)
