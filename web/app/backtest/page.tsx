@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, BacktestJob, BacktestResult, BacktestSide, CurvePoint, errorMessage, Strategy } from "@/lib/api";
 import { ErrorCard, Skeleton } from "@/components/Feedback";
 import { readCache, writeCache } from "@/lib/cache";
+import QuotaStatus from "@/components/QuotaStatus";
 
 const money = (v: number | null | undefined, digits = 0) =>
   v == null ? "—" : v.toLocaleString("zh-TW", { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -97,8 +98,9 @@ function RunForm({ onStarted, lastJob }: { onStarted: () => void; lastJob: Backt
     <div className="flex flex-wrap items-center gap-3">
       <button className="btn-primary" disabled={busy || capital < 1000} onClick={run}>{busy ? "啟動中…" : "開始回測"}</button>
       <span className="text-xs text-muted">在背景跑，可以關掉頁面或換裝置，回來會看到結果。</span>
-      {lastJob?.status === "failed" && <span className="text-xs text-red-300">上次回測失敗：{lastJob.error}</span>}
+      {lastJob?.status === "failed" && <span className="text-xs text-red-300">上次回測失敗：{lastJob.error?.replace(/^\w+(Error|Exception): /, "")}</span>}
     </div>
+    <QuotaStatus need="第一次回測約需 300–500 次，之後同一天會少很多" />
     {error && <ErrorCard message={error} />}
   </section>;
 }
