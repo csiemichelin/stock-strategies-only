@@ -288,22 +288,68 @@ def _ws(sh, title, rows=1000, cols=12):
         return sh.add_worksheet(title=title, rows=rows, cols=cols)
 
 
-def load_state() -> dict | None:
+_cache: dict = {"state": None, "ts": 0.0}
+
+
+def _cache_ttl() -> float:
+    return float(os.environ.get("SIM_CACHE_TTL", "60"))
+
+
+def _remember(state: dict | None) -> None:
+    import copy
+    import time
+
+    _cache.update(state=copy.deepcopy(state), ts=time.monotonic())
+
+
+def _rows_to_records(values: list[list]) -> list[dict]:
+    if not values:
+        return []
+    header, out = values[0], []
+    for row in values[1:]:
+        if not any(str(v).strip() for v in row):
+            continue
+        row = list(row) + [""] * (len(header) - len(row))
+        out.append(dict(zip(header, row)))
+    return out
+
+
+def _read_sheet_state(sh) -> dict | None:
+    """一次 API 呼叫讀三個分頁（原本 6 次：每個分頁先查 metadata 再讀值）。"""
+    try:
+        res = sh.values_batch_get(["'SimState'!A2", "'SimTrades'!A1:K", "'SimEquity'!A1:D"])
+        core_v, trades_v, equity_v = (r.get("values", []) for r in res["valueRanges"])
+        core = core_v[0][0] if core_v and core_v[0] else ""
+        trades, equity = _rows_to_records(trades_v), _rows_to_records(equity_v)
+    except Exception:  # 分頁還不存在等 → 走原本逐頁讀（會順便建立分頁）
+        core = _ws(sh, "SimState", rows=5, cols=2).acell("A2").value
+        if not core:
+            return None
+        trades = _ws(sh, "SimTrades").get_all_records(numericise_ignore=["all"])
+        equity = _ws(sh, "SimEquity").get_all_records(numericise_ignore=["all"])
+    if not core:
+        return None
+    state = json.loads(core)
+    state["trades"] = [_typed(t, ("shares", "price", "amount", "fee", "pnl", "pnl_pct")) for t in trades]
+    state["equity"] = [_typed(e, ("cash", "holdings", "total")) for e in equity]
+    return state
+
+
+def load_state(fresh: bool = False) -> dict | None:
+    """讀模擬帳戶。Sheet 模式下同一行程 60 秒內重用記憶體（每日排程在 GitHub Actions 另一個行程寫入，最晚 60 秒後看到）。"""
+    import copy
+    import time
+
     with _store_lock:
         if not _use_sheet():
             p = _local_path()
             return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+        if not fresh and _cache["ts"] and time.monotonic() - _cache["ts"] < _cache_ttl():
+            return copy.deepcopy(_cache["state"])
         from .sheet import get_gsheet
 
-        sh = get_gsheet()
-        core = _ws(sh, "SimState", rows=5, cols=2).acell("A2").value
-        if not core:
-            return None
-        state = json.loads(core)
-        trades = _ws(sh, "SimTrades").get_all_records(numericise_ignore=["all"])
-        equity = _ws(sh, "SimEquity").get_all_records(numericise_ignore=["all"])
-        state["trades"] = [_typed(t, ("shares", "price", "amount", "fee", "pnl", "pnl_pct")) for t in trades]
-        state["equity"] = [_typed(e, ("cash", "holdings", "total")) for e in equity]
+        state = _read_sheet_state(get_gsheet())
+        _remember(state)
         return state
 
 
@@ -338,6 +384,7 @@ def save_state(state: dict) -> None:
             w.clear()
             data = [cols] + [["" if r.get(c) is None else r.get(c) for c in cols] for r in rows]
             w.update(range_name="A1", values=data, value_input_option="RAW")
+        _remember(state)
 
 
 def clear_state() -> None:
@@ -350,6 +397,7 @@ def clear_state() -> None:
         sh = get_gsheet()
         for title in ("SimState", "SimTrades", "SimEquity"):
             _ws(sh, title).clear()
+        _remember(None)
 
 
 # ---------------------------------------------------------------- 每日排程
