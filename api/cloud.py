@@ -3,6 +3,8 @@
 - API_KEY：設定後，除 /api/health 外的 /api/* 都要帶 `x-api-key` header
 - STRATEGY_STORE=sheet：策略同步到 Google Sheet 的「Strategies」分頁
   （雲端主機磁碟是暫存的；啟動時從 Sheet 拉回，存檔／刪除後推上 Sheet）
+- GET /api/runs/latest：目前執行中（或最近一次）的選股任務，讓其他裝置也看得到進度
+- 網頁手動選股完成後，若有設 LINE_CHANNEL_TOKEN / LINE_USER_ID，推一則註明「手動觸發」的結果
 """
 
 from __future__ import annotations
@@ -140,6 +142,57 @@ def _install_sheet_store(app: FastAPI) -> None:
             print(f"[strategy-store] pull failed: {exc}", file=sys.stderr)
 
 
-def install(app: FastAPI) -> None:
+# ---------- Shared run status + LINE on manual runs ----------
+
+_ACTIVE = ("queued", "running", "cancelling")
+
+
+def latest_run(runs) -> dict | None:
+    """執行中的任務優先，否則回最近建立的一筆（RunManager 保留 1 小時）。"""
+    with runs._lock:
+        runs._prune()
+        jobs = list(runs._jobs.values())
+        if not jobs:
+            return None
+        active = [j for j in jobs if j["status"] in _ACTIVE]
+        job = active[0] if active else max(jobs, key=lambda j: j["created_at"])
+        return runs._snapshot(job)
+
+
+def _notify_line(strategy: dict, result: dict) -> None:
+    from datetime import datetime, timezone, timedelta
+
+    from stock_strategies.line_brief import format_daily_brief
+    from stock_strategies.line_push import line_enabled, send_line
+
+    if not line_enabled():
+        return
+    now = datetime.now(timezone(timedelta(hours=8)))
+    header = f"🖐️ 手動觸發選股 {now:%m/%d %H:%M}（網頁｜策略：{strategy.get('name', strategy.get('id'))}）"
+    try:
+        send_line(format_daily_brief(result.get("results", []), market=result.get("market"), header=header))
+    except Exception as exc:  # 推播失敗不影響網頁結果
+        print(f"[line] manual-run push failed: {exc}", file=sys.stderr)
+
+
+def _install_runs(app: FastAPI, runs) -> None:
+    @app.get("/api/runs/latest")
+    def _latest():
+        return {"job": latest_run(runs)}
+
+    original = runs._runner
+
+    def runner_with_line(strategy, limit=None, *, progress=None, cancel=None, **kw):
+        result = original(strategy, limit, progress=progress, cancel=cancel, **kw)
+        if not (cancel and cancel.is_set()):
+            _notify_line(strategy, result)
+        return result
+
+    runs._runner = runner_with_line
+
+
+def install(app: FastAPI, runs=None) -> None:
     _install_api_key(app)
     _install_sheet_store(app)
+    if runs is not None:
+        _install_runs(app, runs)
