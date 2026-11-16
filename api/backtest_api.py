@@ -8,17 +8,15 @@ POST /api/backtest/cancel   取消
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import traceback
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from stock_strategies import compare, loader
+from stock_strategies import compare, loader, webstore
 
 TZ = timezone(timedelta(hours=8))
 MAX_DAYS = 365
@@ -55,29 +53,18 @@ job = _Job()
 _last: dict = {"result": None}
 
 
-def _result_path() -> Path:
-    return Path(os.environ.get("BACKTEST_FILE", Path(__file__).resolve().parent.parent / ".cache" / "backtest_last.json"))
-
-
 def last_result():
     if _last["result"] is None:
-        p = _result_path()
-        if p.exists():
-            try:
-                _last["result"] = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        try:
+            _last["result"] = webstore.load("last_backtest")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[webstore] load last_backtest failed: {exc}")
     return _last["result"]
 
 
 def _save(result: dict) -> None:
     _last["result"] = result
-    try:
-        p = _result_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    webstore.save_quietly("last_backtest", result)  # 存 Google Sheet，重新部署後還看得到
 
 
 def _runner():
