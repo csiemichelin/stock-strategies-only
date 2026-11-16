@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, errorMessage, Market, Strategy } from "@/lib/api";
+import { readCache, writeCache } from "@/lib/cache";
 import { SourceBadge } from "@/components/ActionBadge";
 import { EmptyState, ErrorCard, Skeleton } from "@/components/Feedback";
 import RunControl from "@/components/RunControl";
@@ -23,17 +24,27 @@ export default function Dashboard() {
     const controller = new AbortController();
     const signal = controller.signal;
     const fail = (key: string, error: unknown) => { if (!signal.aborted) setErrors(prev => ({ ...prev, [key]: errorMessage(error) })); };
-    setErrors({}); setLoading(true); setMarketLoading(true); setWatchLoading(true);
-    api.listStrategies(signal).then(data => {
-      const usable = data.strategies.filter(s => !s.error);
-      setStrategies(usable);
+    const applyPicked = (usable: Strategy[]) => {
       let remembered = "";
       try { remembered = sessionStorage.getItem("screening:selected") || ""; } catch {}
       setPicked(prev => [prev, remembered, "default"].find(id => usable.some(s => s.id === id)) || usable[0]?.id || "");
+    };
+    // 先顯示上次的資料，避免後端冷啟動時整頁空白
+    const cachedStrategies = readCache<Strategy[]>("strategies");
+    const cachedMarket = readCache<Market>("market");
+    const cachedWatch = readCache<number>("watchCount");
+    if (cachedStrategies?.length) { setStrategies(cachedStrategies); applyPicked(cachedStrategies); }
+    if (cachedMarket) setMarket(cachedMarket);
+    if (cachedWatch != null) setWatchCount(cachedWatch);
+    setErrors({}); setLoading(!cachedStrategies?.length); setMarketLoading(!cachedMarket); setWatchLoading(cachedWatch == null);
+    api.listStrategies(signal).then(data => {
+      const usable = data.strategies.filter(s => !s.error);
+      setStrategies(usable); writeCache("strategies", usable);
+      applyPicked(usable);
       if (usable.length !== data.strategies.length) fail("strategies", new Error("部分策略檔無法讀取，請到策略庫查看"));
     }).catch(error => fail("strategies", error)).finally(() => { if (!signal.aborted) setLoading(false); });
-    api.getMarket(signal).then(setMarket).catch(error => fail("market", error)).finally(() => { if (!signal.aborted) setMarketLoading(false); });
-    api.getWatchlist(signal).then(data => { setWatchCount(data.items.length); if (data.error) fail("watchlist", new Error(data.error)); }).catch(error => fail("watchlist", error)).finally(() => { if (!signal.aborted) setWatchLoading(false); });
+    api.getMarket(signal).then(m => { setMarket(m); if (m.close != null) writeCache("market", m); }).catch(error => fail("market", error)).finally(() => { if (!signal.aborted) setMarketLoading(false); });
+    api.getWatchlist(signal).then(data => { setWatchCount(data.items.length); if (data.error) fail("watchlist", new Error(data.error)); else writeCache("watchCount", data.items.length); }).catch(error => fail("watchlist", error)).finally(() => { if (!signal.aborted) setWatchLoading(false); });
     return () => controller.abort();
   }, [reload]);
   const selected = strategies.find(s => s.id === picked);
