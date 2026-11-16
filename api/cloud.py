@@ -236,12 +236,81 @@ def _notify_line(strategy: dict, result: dict) -> None:
         print(f"[line] manual-run push failed: {exc}", file=sys.stderr)
 
 
+def _child_main(runner, strategy, limit, queue, cancel) -> None:
+    """子行程：低優先權跑選股，進度與結果經 queue 傳回。"""
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    try:
+        from stock_strategies import sheet
+
+        sheet._GSHEET_CACHE.clear()  # 不要共用父行程的 HTTP 連線
+    except Exception:
+        pass
+    try:
+        result = runner(strategy, limit, progress=lambda **st: queue.put(("progress", st)), cancel=cancel)
+        queue.put(("done", result))
+    except BaseException as exc:  # noqa: BLE001
+        queue.put(("error", f"{type(exc).__name__}: {exc}"[:300]))
+    finally:
+        queue.close()
+        queue.join_thread()
+        os._exit(0)  # 不跑父行程（uvicorn）繼承來的 atexit
+
+
+def run_in_subprocess(runner):
+    """把選股放到獨立子行程（fork）。
+
+    Render 免費方案只有 0.1 CPU；選股和 API 同一個行程時，計算會搶走 GIL，
+    其他頁面（模擬交易、健康檢查）都卡住，健康檢查逾時甚至會讓 Render 重啟、選股中斷。
+    """
+    import multiprocessing as mp
+    import queue as queue_mod
+
+    def wrapped(strategy, limit=None, *, progress=None, cancel=None, **kw):
+        ctx = mp.get_context("fork")
+        q, child_cancel = ctx.Queue(), ctx.Event()
+        proc = ctx.Process(target=_child_main, args=(runner, strategy, limit, q, child_cancel),
+                           name="screening", daemon=True)
+        proc.start()
+        report = progress or (lambda **st: None)
+        try:
+            while True:
+                if cancel is not None and cancel.is_set():
+                    child_cancel.set()
+                try:
+                    kind, payload = q.get(timeout=0.5)
+                except queue_mod.Empty:
+                    if not proc.is_alive():
+                        try:
+                            kind, payload = q.get(timeout=1)
+                        except queue_mod.Empty:
+                            raise RuntimeError(f"選股程序意外結束（exit {proc.exitcode}），請重新執行") from None
+                    else:
+                        continue
+                if kind == "progress":
+                    report(**payload)
+                elif kind == "done":
+                    return payload
+                else:
+                    raise RuntimeError(payload)
+        finally:
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.terminate()
+
+    return wrapped
+
+
 def _install_runs(app: FastAPI, runs) -> None:
     @app.get("/api/runs/latest")
     def _latest():
         return {"job": latest_run(runs)}
 
     original = runs._runner
+    if os.environ.get("RUN_ISOLATION", "process" if os.environ.get("RENDER") else "thread") == "process":
+        original = run_in_subprocess(original)
 
     def runner_with_line(strategy, limit=None, *, progress=None, cancel=None, **kw):
         result = original(strategy, limit, progress=progress, cancel=cancel, **kw)
