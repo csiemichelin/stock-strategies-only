@@ -236,6 +236,29 @@ def _notify_line(strategy: dict, result: dict) -> None:
         print(f"[line] manual-run push failed: {exc}", file=sys.stderr)
 
 
+def to_plain(obj):
+    """把 numpy / pandas 型別轉成一般 Python 值（FastAPI 不會序列化 numpy.bool_、numpy.float64 等）。"""
+    import math
+
+    if isinstance(obj, dict):
+        return {str(k): to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [to_plain(v) for v in obj]
+    if isinstance(obj, (str, bool, int)) or obj is None:
+        return obj
+    if isinstance(obj, float):
+        return None if math.isnan(obj) or math.isinf(obj) else obj
+    item = getattr(obj, "item", None)  # numpy 純量
+    if callable(item):
+        try:
+            return to_plain(item())
+        except (ValueError, TypeError):
+            pass
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    return str(obj)
+
+
 def _child_main(runner, strategy, limit, queue, cancel) -> None:
     """子行程：低優先權跑選股，進度與結果經 queue 傳回。"""
     try:
@@ -313,7 +336,7 @@ def _install_runs(app: FastAPI, runs) -> None:
         original = run_in_subprocess(original)
 
     def runner_with_line(strategy, limit=None, *, progress=None, cancel=None, **kw):
-        result = original(strategy, limit, progress=progress, cancel=cancel, **kw)
+        result = to_plain(original(strategy, limit, progress=progress, cancel=cancel, **kw))
         if not (cancel and cancel.is_set()):
             _notify_line(strategy, result)
         return result
