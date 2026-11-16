@@ -57,6 +57,18 @@ export type RunJob = {
   result: RunResult | null;
   error: string | null;
 };
+export type SimPosition = { stock_id: string; name: string; shares: number; entry_price: number; entry_date: string; cost: number; stop_price: number; target_price: number; days_held: number; last_price: number };
+export type SimOrder = { stock_id: string; name: string; signal_date: string; signal_score?: number; position_pct: number; ref_price?: number; stop_price?: number; target_price?: number };
+export type SimTrade = { date: string; side: "BUY" | "SELL"; stock_id: string; name: string; shares: number; price: number; amount: number; fee: number; pnl?: number | null; pnl_pct?: number | null; reason: string };
+export type SimPoint = { date: string; cash: number; holdings: number; total: number };
+export type SimAccount = {
+  status: "running" | "stopped"; mode: "forward" | "replay"; strategy: { id: string; name: string };
+  params: { hold_days: number }; initial_capital: number; cash: number; start_date: string; last_date: string | null;
+  created_at: string; stopped_at: string | null; positions: SimPosition[]; pending: SimOrder[]; trades: SimTrade[]; equity: SimPoint[];
+  summary: { total: number; pnl: number; pnl_pct: number; cash: number; holdings: number; closed_trades: number; win_rate: number | null; max_drawdown_pct: number };
+};
+export type SimJob = { status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null; current: string | null; error: string | null };
+export type SimResponse = { account: SimAccount | null; job: SimJob };
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
@@ -105,6 +117,9 @@ export const api = {
   getWatchlist: (signal?: AbortSignal) => jfetch<{ items: { stock_id: string; name?: string }[]; error?: string }>("/api/watchlist", { signal }),
   startRun: (strategy_id: string) => jfetch<RunJob>("/api/runs", { method: "POST", body: JSON.stringify({ strategy_id }) }),
   getRun: (id: string, signal?: AbortSignal) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { signal }),
+  getSim: (signal?: AbortSignal) => jfetch<SimResponse>("/api/sim", { signal }),
+  startSim: (capital: number, strategy_id: string, start_date?: string) => jfetch<SimResponse>("/api/sim/start", { method: "POST", body: JSON.stringify({ capital, strategy_id, start_date: start_date || null }) }),
+  stopSim: () => jfetch<SimResponse>("/api/sim/stop", { method: "POST" }),
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
   cancelRun: (id: string) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
