@@ -5,8 +5,16 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 
+_GSHEET_CACHE: dict = {}
+
+
 def get_gsheet():
+    """回傳 Spreadsheet；同一行程內重用已授權的連線（省掉每次授權＋開檔約 1 秒）。"""
     creds_json = os.environ["GOOGLE_CREDS_JSON"]
+    key = (os.environ["GOOGLE_SHEET_ID"], hash(creds_json))
+    sh = _GSHEET_CACHE.get(key)
+    if sh is not None:
+        return sh
     creds_dict = json.loads(creds_json)
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -14,7 +22,10 @@ def get_gsheet():
     ]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     gc = gspread.authorize(creds)
-    return gc.open_by_key(os.environ["GOOGLE_SHEET_ID"])
+    sh = gc.open_by_key(os.environ["GOOGLE_SHEET_ID"])
+    _GSHEET_CACHE.clear()
+    _GSHEET_CACHE[key] = sh
+    return sh
 
 
 def read_watchlist() -> list[dict]:
