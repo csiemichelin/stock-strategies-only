@@ -163,3 +163,70 @@ def test_watchlist_error_not_cached(app_env, monkeypatch):
         c.get("/api/watchlist", headers=h)
     assert len(calls) == 2
     cloud._response_cache.clear()
+
+
+def test_run_in_subprocess_progress_result_and_errors():
+    import os
+    import threading
+
+    import api.cloud as cloud
+
+    def runner(strategy, limit=None, *, progress=None, cancel=None):
+        progress(completed=0, total=2, current="2330")
+        progress(completed=2, total=2, current=None)
+        return {"pid": os.getpid(), "results": [{"stock_id": "2330"}], "name": strategy["name"]}
+
+    seen = []
+    out = cloud.run_in_subprocess(runner)({"name": "x"}, progress=lambda **st: seen.append(st))
+    assert out["pid"] != os.getpid() and out["name"] == "x"
+    assert seen[-1] == {"completed": 2, "total": 2, "current": None}
+
+    def boom(strategy, limit=None, *, progress=None, cancel=None):
+        raise ValueError("壞掉")
+
+    with pytest.raises(RuntimeError, match="壞掉"):
+        cloud.run_in_subprocess(boom)({})
+
+    def dies(strategy, limit=None, *, progress=None, cancel=None):
+        os._exit(9)
+
+    with pytest.raises(RuntimeError, match="意外結束"):
+        cloud.run_in_subprocess(dies)({})
+
+    def slow(strategy, limit=None, *, progress=None, cancel=None):
+        done = []
+        for i in range(200):
+            if cancel.wait(0.05):
+                break
+            done.append(i)
+        return {"partial": len(done)}
+
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    out = cloud.run_in_subprocess(slow)({}, cancel=cancel)
+    assert out["partial"] < 200
+
+
+def test_api_stays_responsive_while_screening(monkeypatch):
+    """選股在子行程跑時，API 行程不會被計算卡住。"""
+    import time
+
+    import api.cloud as cloud
+
+    def busy(strategy, limit=None, *, progress=None, cancel=None):
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            sum(i * i for i in range(10_000))  # 純 Python 計算，會霸佔 GIL
+        return {}
+
+    import threading
+    t = threading.Thread(target=cloud.run_in_subprocess(busy), args=({},))
+    t.start()
+    worst = 0.0
+    while t.is_alive():
+        s = time.perf_counter()
+        sum(range(1000))
+        time.sleep(0.01)
+        worst = max(worst, time.perf_counter() - s)
+    t.join()
+    assert worst < 0.2
