@@ -21,6 +21,7 @@ from stock_strategies import compare, loader, webstore
 TZ = timezone(timedelta(hours=8))
 MAX_DAYS = 365
 MIN_DAYS = 7
+MIN_QUOTA = 150  # FinMind 剩餘額度低於這個就先不要開始回測
 
 
 class BacktestIn(BaseModel):
@@ -112,6 +113,12 @@ def install(app: FastAPI) -> None:
         strategy = loader.get_strategy(payload.strategy_id)
         if not strategy:
             raise HTTPException(404, f"找不到策略 {payload.strategy_id}")
+        from api.cloud import finmind_usage
+
+        usage = finmind_usage()
+        if usage and usage["remaining"] < MIN_QUOTA:
+            raise HTTPException(429, f"FinMind 免費額度這個小時只剩 {usage['remaining']} 次（上限 {usage['limit']}），"
+                                     "回測可能要用到幾百次，請約一小時後再試")
         today = datetime.now(TZ).date()
         if payload.start_date > today - timedelta(days=MIN_DAYS):
             raise HTTPException(400, f"回測期間至少要 {MIN_DAYS} 天")
