@@ -123,3 +123,39 @@ def test_local_store_roundtrip(tmp_path, monkeypatch, state):
     assert sim.load_state()["initial_capital"] == 10_000
     sim.clear_state()
     assert sim.load_state() is None
+
+
+class _FakeSheet:
+    def __init__(self, state):
+        import json as _j
+
+        core = {k: v for k, v in state.items() if k not in ("trades", "equity")}
+        self.batch_calls = 0
+        self.ranges = {
+            "SimState": [[_j.dumps(core, ensure_ascii=False)]],
+            "SimTrades": [sim.TRADE_COLS, ["2026-01-05", "BUY", "0050", "元大台灣50", "19", "1,001.5", "19028.5", "27"]],
+            "SimEquity": [sim.EQUITY_COLS, ["2026-01-05", "100", "9900", "10000"], ["", "", "", ""]],
+        }
+
+    def values_batch_get(self, ranges):
+        self.batch_calls += 1
+        return {"valueRanges": [{"values": self.ranges[r.split("'")[1]]} for r in ranges]}
+
+
+def test_sheet_load_is_one_batch_call_and_cached(monkeypatch, state):
+    from stock_strategies import sheet
+
+    fake = _FakeSheet(state)
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "x")
+    monkeypatch.setenv("GOOGLE_CREDS_JSON", "{}")
+    monkeypatch.setattr(sheet, "get_gsheet", lambda: fake)
+    sim._cache.update(state=None, ts=0.0)
+    s1 = sim.load_state()
+    assert s1["trades"][0]["stock_id"] == "0050" and s1["trades"][0]["shares"] == 19
+    assert s1["trades"][0]["price"] == 1001.5 and s1["trades"][0]["pnl"] is None
+    assert len(s1["equity"]) == 1 and s1["equity"][0]["total"] == 10000
+    s1["cash"] = -1  # 呼叫端改動不影響快取
+    assert sim.load_state()["cash"] == 10_000 and fake.batch_calls == 1
+    sim.load_state(fresh=True)
+    assert fake.batch_calls == 2
+    sim._cache.update(state=None, ts=0.0)
