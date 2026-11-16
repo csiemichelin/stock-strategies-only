@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errorMessage, SimAccount, SimJob, SimPoint, Strategy } from "@/lib/api";
 import { EmptyState, ErrorCard, Skeleton } from "@/components/Feedback";
+import { readCache, writeCache } from "@/lib/cache";
 
 const money = (v: number | null | undefined, digits = 0) =>
   v == null ? "—" : v.toLocaleString("zh-TW", { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -20,11 +21,16 @@ export default function SimulationPage() {
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick(t => t + 1), []);
 
+  useEffect(() => { // 先顯示上次看到的帳戶，背景再更新
+    const cached = readCache<{ account: SimAccount | null; job: SimJob }>("sim");
+    if (cached) { setAccount(cached.account); setJob(cached.job); setLoading(false); }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     api.getSim(controller.signal).then(res => {
-      setAccount(res.account); setJob(res.job); setError(null);
+      setAccount(res.account); setJob(res.job); setError(null); writeCache("sim", res);
       timer = setTimeout(refresh, res.job.status === "running" ? 2_000 : 30_000);
     }).catch(err => {
       if (controller.signal.aborted) return;
