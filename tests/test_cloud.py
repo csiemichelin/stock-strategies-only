@@ -230,3 +230,39 @@ def test_api_stays_responsive_while_screening(monkeypatch):
         worst = max(worst, time.perf_counter() - s)
     t.join()
     assert worst < 0.2
+
+
+def test_numpy_results_are_json_safe(app_env):
+    """選股結果裡的 numpy.bool_/float64（例如基本面判斷）不能讓 /api/runs/{id} 回 500。"""
+    import time
+
+    import numpy as np
+    import pandas as pd
+
+    from fastapi import FastAPI
+
+    import api.cloud as cloud
+
+    main, _, _ = app_env
+
+    def np_runner(strategy, limit=None, *, progress=None, cancel=None):
+        row = {"stock_id": "2330", "action": "BUY", "signal_score": np.float64(70.5),
+               "components": {"fundamental_pass": np.bool_(True), "backtest_samples": np.int64(9),
+                              "eps_min": np.float64("nan"), "when": pd.Timestamp("2026-11-16")}}
+        return {"strategy": {"id": strategy["id"], "name": strategy["name"]},
+                "market": {"bullish": np.bool_(True), "close": np.float64(1.0), "ma20": 1.0}, "results": [row]}
+
+    main.runs._runner = np_runner
+    cloud._install_runs(FastAPI(), main.runs)
+    h = {"x-api-key": "secret"}
+    with TestClient(main.app) as c:
+        job = c.post("/api/runs", json={"strategy_id": "default"}, headers=h).json()
+        for _ in range(100):
+            r = c.get(f"/api/runs/{job['id']}", headers=h)
+            if r.json()["status"] == "completed":
+                break
+            time.sleep(0.05)
+    assert r.status_code == 200
+    comp = r.json()["result"]["results"][0]["components"]
+    assert comp["fundamental_pass"] is True and comp["backtest_samples"] == 9 and comp["eps_min"] is None
+    assert comp["when"].startswith("2026-11-16")
