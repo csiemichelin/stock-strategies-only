@@ -57,6 +57,7 @@ export type RunJob = {
   result: RunResult | null;
   error: string | null;
 };
+export type SavedRun = { finished_at: string; result: RunResult };
 export type SimPosition = { stock_id: string; name: string; shares: number; entry_price: number; entry_date: string; cost: number; stop_price: number; target_price: number; days_held: number; last_price: number };
 export type SimOrder = { stock_id: string; name: string; signal_date: string; signal_score?: number; position_pct: number; ref_price?: number; stop_price?: number; target_price?: number };
 export type SimTrade = { date: string; side: "BUY" | "SELL"; stock_id: string; name: string; shares: number; price: number; amount: number; fee: number; pnl?: number | null; pnl_pct?: number | null; reason: string };
@@ -78,7 +79,7 @@ export type BacktestSide = {
 export type BacktestResult = {
   strategy: { id: string; name: string }; capital: number; start_date: string; end_date: string; trading_days: number;
   result: BacktestSide; benchmark: Partial<BacktestSide> & { stock_id: string; name: string; available: boolean; shares?: number; error?: string };
-  trades: SimTrade[]; finished_at?: string;
+  trades: SimTrade[]; finished_at?: string; skipped?: { stock_id: string; name: string; reason: string }[];
 };
 export type BacktestJob = {
   status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null;
@@ -141,5 +142,6 @@ export const api = {
   startBacktest: (strategy_id: string, start_date: string, capital: number) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_id, start_date, capital }) }),
   cancelBacktest: () => jfetch<BacktestResponse>("/api/backtest/cancel", { method: "POST" }),
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
+  lastRunResult: (signal?: AbortSignal) => jfetch<{ run: SavedRun | null }>("/api/runs/last-result", { signal }),
   cancelRun: (id: string) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
