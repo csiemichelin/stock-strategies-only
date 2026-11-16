@@ -7,6 +7,12 @@ import requests
 
 from .config import CONFIG, TELEGRAM_API
 from .line_push import line_enabled, send_line
+from .line_brief import format_daily_brief, format_premarket_brief
+
+
+def _line_brief() -> bool:
+    """推 LINE 時預設用精簡版；LINE_STYLE=full 可切回完整版"""
+    return line_enabled() and os.environ.get("LINE_STYLE", "brief").lower() != "full"
 
 
 def send_telegram(text: str):
@@ -154,6 +160,8 @@ def format_messages(
     night_note: str = None,
 ) -> list[str]:
     """產生多則 Telegram 訊息"""
+    if _line_brief():
+        return [format_daily_brief(signals, market=market, night_note=night_note)]
     buys = [s for s in signals if s.get("action") == "BUY"]
     watches = [s for s in signals if s.get("action") == "WATCH"]
     skips = [s for s in signals if s.get("action") in ("SKIP", "ERROR")]
@@ -378,6 +386,8 @@ def format_premarket(night: dict | None, signals: list[dict]) -> str:
     night   — night_session.get_night_session() 的回傳（可能為 None）
     signals — sheet.read_latest_signals() 的回傳（Sheet 扁平 dict，最新在最前）
     """
+    if _line_brief():
+        return format_premarket_brief(night, signals)
     from .night_session import tailwind_tag, bias_guidance
 
     today = datetime.now()
