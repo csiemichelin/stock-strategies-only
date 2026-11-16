@@ -106,6 +106,13 @@ def format_daily_brief(
         lines.append("")
         lines.append(f"🟡 觀察（接近買點）：{top}")
 
+    if header is None:  # 每日排程那則才附模擬帳戶
+        from .sim import LAST_SUMMARY
+
+        if LAST_SUMMARY:
+            lines.append("")
+            lines.extend(LAST_SUMMARY)
+
     lines.append("")
     lines.append(DISCLAIMER)
     return "\n".join(lines)
