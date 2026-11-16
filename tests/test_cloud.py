@@ -122,3 +122,44 @@ def test_latest_run_and_manual_line_push(app_env, monkeypatch):
             time.sleep(0.05)
         assert latest["id"] == job["id"] and latest["status"] == "completed"
     assert sent and sent[0].startswith("🖐️ 手動觸發選股") and "2330 台積電" in sent[0]
+
+
+def test_response_cache_is_behind_api_key(app_env, monkeypatch):
+    import api.cloud as cloud
+    import api.main as main_mod
+
+    monkeypatch.setenv("WEB_CACHE_TTL", "600")
+    cloud._response_cache.clear()
+    calls = []
+    importlib.reload(main_mod)
+    monkeypatch.setattr(main_mod, "get_market_state", lambda: calls.append(1) or {"bullish": True, "close": 1, "ma20": 1, "note": "x"})
+    h = {"x-api-key": "secret"}
+    with TestClient(main_mod.app) as c:
+        assert c.get("/api/market", headers=h).json()["note"] == "x"
+        r = c.get("/api/market", headers=h)
+        assert r.headers.get("x-cache") == "hit" and r.json()["close"] == 1
+        assert c.get("/api/market").status_code == 401  # 快取不能繞過驗證
+    assert len(calls) == 1
+    cloud._response_cache.clear()
+
+
+def test_watchlist_error_not_cached(app_env, monkeypatch):
+    import api.cloud as cloud
+    import api.main as main_mod
+
+    monkeypatch.setenv("WEB_CACHE_TTL", "600")
+    cloud._response_cache.clear()
+    importlib.reload(main_mod)
+    calls = []
+
+    def boom():
+        calls.append(1)
+        raise RuntimeError("sheet down")
+
+    monkeypatch.setattr(main_mod, "read_watchlist", boom)
+    h = {"x-api-key": "secret"}
+    with TestClient(main_mod.app) as c:
+        c.get("/api/watchlist", headers=h)
+        c.get("/api/watchlist", headers=h)
+    assert len(calls) == 2
+    cloud._response_cache.clear()
