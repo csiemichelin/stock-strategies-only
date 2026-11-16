@@ -48,7 +48,7 @@ runs = RunManager()
 # 雲端部署附加（API_KEY / STRATEGY_STORE=sheet；未設定時不影響本機）
 from api.cloud import install as install_cloud  # noqa: E402
 
-install_cloud(app)
+install_cloud(app, runs)
 
 
 @app.exception_handler(loader.StrategyError)
