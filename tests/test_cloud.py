@@ -121,6 +121,8 @@ def test_latest_run_and_manual_line_push(app_env, monkeypatch):
                 break
             time.sleep(0.05)
         assert latest["id"] == job["id"] and latest["status"] == "completed"
+        last = c.get("/api/runs/last-result", headers=h).json()["run"]
+        assert last["result"]["results"][0]["stock_id"] == "2330" and last["finished_at"]
     assert sent and sent[0].startswith("🖐️ 手動觸發選股") and "2330 台積電" in sent[0]
 
 
