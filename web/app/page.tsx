@@ -33,7 +33,7 @@ export default function Dashboard() {
   const finishedResult = run.job?.status === "completed" ? run.result : null;
   useEffect(() => {
     if (!finishedResult) return;
-    const saved = { finished_at: new Date().toISOString(), result: finishedResult };
+    const saved = { finished_at: finishedResult.reused?.finished_at ?? new Date().toISOString(), result: finishedResult };
     setLastRun(saved); writeCache("lastRun", saved);
   }, [finishedResult]);
   useEffect(() => {
@@ -82,7 +82,9 @@ export default function Dashboard() {
         </div><div className="lg:border-l lg:border-line lg:pl-6"><RunControl run={run} disabled={!picked} /></div>
       </div>}
     </section>
-    {run.result ? <><QuotaNote result={run.result} /><SignalResults run={run.result} /></>
+    {run.result ? <>{run.result.reused && <p className="rounded-xl border border-accent/30 bg-accent/5 p-4 text-sm leading-6">
+        ♻️ 這個時段（資料日 {run.result.reused.data_day}）已經用同一套策略選過，資料不會變，直接顯示 {new Date(run.result.reused.finished_at).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 的結果，沒有重跑、也不重複推 LINE。平日 14:30 收盤資料出來後再按就會重新選股。</p>}
+      <QuotaNote result={run.result} /><SignalResults run={run.result} /></>
       : run.running ? null
       : lastRun ? <div className="space-y-3">
           <p className="text-sm text-muted">上次選股結果・{new Date(lastRun.finished_at).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}・策略 {lastRun.result.strategy?.name}（再按「開始選股」會更新）</p>
