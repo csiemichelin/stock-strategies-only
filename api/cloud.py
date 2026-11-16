@@ -326,10 +326,30 @@ def run_in_subprocess(runner):
     return wrapped
 
 
+def _remember_run(result: dict) -> None:
+    """最近一次完成的網頁選股，下次開頁直接顯示（存 Google Sheet，重新部署也在）。"""
+    from datetime import datetime, timedelta, timezone
+
+    from stock_strategies import webstore
+
+    finished = datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds")
+    webstore.save_quietly("last_run", {"finished_at": finished, "result": result})
+
+
 def _install_runs(app: FastAPI, runs) -> None:
     @app.get("/api/runs/latest")
     def _latest():
         return {"job": latest_run(runs)}
+
+    @app.get("/api/runs/last-result")
+    def _last_result():
+        from stock_strategies import webstore
+
+        try:
+            return {"run": webstore.load("last_run")}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[webstore] load last_run failed: {exc}", file=sys.stderr)
+            return {"run": None}
 
     original = runs._runner
     if os.environ.get("RUN_ISOLATION", "process" if os.environ.get("RENDER") else "thread") == "process":
@@ -338,6 +358,7 @@ def _install_runs(app: FastAPI, runs) -> None:
     def runner_with_line(strategy, limit=None, *, progress=None, cancel=None, **kw):
         result = to_plain(original(strategy, limit, progress=progress, cancel=cancel, **kw))
         if not (cancel and cancel.is_set()):
+            _remember_run(result)
             _notify_line(strategy, result)
         return result
 
