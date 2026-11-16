@@ -633,7 +633,7 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
 
     watch = read_watchlist()
     report(phase="下載歷史資料", completed=0, total=len(watch), current=None)
-    stocks, funds = [], {}
+    stocks, funds, skipped = [], {}, []
     for i, row in enumerate(watch):
         if cancel and cancel.is_set():
             break
@@ -646,6 +646,7 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
             stocks.append(_StockReplay(sid, name, raw, params, years))
             funds[sid] = get_fundamental(sid)
         except Exception as exc:
+            skipped.append({"stock_id": sid, "name": name, "reason": str(exc)[:120]})
             print(f"[replay] {sid} 略過：{exc}", file=sys.stderr)
 
     idx = get_index_history("TAIEX")
@@ -653,6 +654,7 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
     idx["ma"] = idx["close"].astype(float).rolling(int(params.get("market_filter_ma_period", 20))).mean()
     days = [d for d in idx["date"] if d >= start_date]
     state = new_state(capital, strategy, days[0] if days else start_date, "replay")
+    state["skipped"] = skipped
     fund_ok = {st.stock_id: _fund_pass(funds.get(st.stock_id, {}), params) for st in stocks}
     report(phase="逐日回放", completed=0, total=len(days), current=None)
     for n, day in enumerate(days):
