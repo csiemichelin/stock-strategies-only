@@ -5,6 +5,8 @@
   （雲端主機磁碟是暫存的；啟動時從 Sheet 拉回，存檔／刪除後推上 Sheet）
 - GET /api/runs/latest：目前執行中（或最近一次）的選股任務，讓其他裝置也看得到進度
 - 網頁手動選股完成後，若有設 LINE_CHANNEL_TOKEN / LINE_USER_ID，推一則註明「手動觸發」的結果
+- 載入加速：/api/market、/api/watchlist 回應在記憶體快取 10 分鐘（WEB_CACHE_TTL 秒）；
+  啟動時背景預熱大盤資料、Google Sheet 連線與模擬帳戶
 """
 
 from __future__ import annotations
@@ -14,9 +16,10 @@ import json
 import os
 import sys
 import threading
+import time
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from stock_strategies import loader
 
@@ -41,6 +44,64 @@ def _install_api_key(app: FastAPI) -> None:
             if not hmac.compare_digest(given, key):
                 return JSONResponse(status_code=401, content={"detail": "unauthorized"})
         return await call_next(request)
+
+
+# ---------- 載入加速：回應快取 + 啟動預熱 ----------
+
+CACHED_PATHS = ("/api/market", "/api/watchlist")
+_response_cache: dict[str, tuple[float, bytes, str]] = {}
+
+
+def _install_response_cache(app: FastAPI) -> None:
+    ttl = float(os.environ.get("WEB_CACHE_TTL", "600"))
+    if ttl <= 0:
+        return
+
+    @app.middleware("http")
+    async def cache_slow_gets(request: Request, call_next):
+        path = request.url.path
+        if request.method != "GET" or path not in CACHED_PATHS:
+            return await call_next(request)
+        key = str(request.url.path) + "?" + str(request.url.query)
+        hit = _response_cache.get(key)
+        if hit and time.monotonic() - hit[0] < ttl:
+            return Response(content=hit[1], media_type=hit[2], headers={"x-cache": "hit"})
+        response = await call_next(request)
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        cacheable = response.status_code == 200 and b'"error"' not in body
+        if cacheable:
+            _response_cache[key] = (time.monotonic(), body, response.media_type or "application/json")
+        headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+        return Response(content=body, status_code=response.status_code, headers=headers,
+                        media_type=response.media_type)
+
+
+def _prewarm() -> None:
+    """冷啟動後第一次開頁最慢（FinMind 大盤全歷史、Google 授權）；開機先在背景跑一次。"""
+    from stock_strategies.market import get_market_state
+
+    steps = [("market", get_market_state)]
+    if os.environ.get("GOOGLE_SHEET_ID") and os.environ.get("GOOGLE_CREDS_JSON"):
+        from stock_strategies import sim
+        from stock_strategies.sheet import read_watchlist
+
+        steps += [("watchlist", read_watchlist), ("sim", sim.load_state)]
+    for name, fn in steps:
+        t = time.monotonic()
+        try:
+            fn()
+            print(f"[prewarm] {name} {time.monotonic() - t:.1f}s")
+        except Exception as exc:
+            print(f"[prewarm] {name} failed: {exc}", file=sys.stderr)
+
+
+def _install_prewarm(app: FastAPI) -> None:
+    if os.environ.get("PREWARM", "1") != "1":
+        return
+
+    @app.on_event("startup")
+    def _start_prewarm():
+        threading.Thread(target=_prewarm, name="prewarm", daemon=True).start()
 
 
 # ---------- Strategy store: Google Sheet ----------
@@ -194,8 +255,10 @@ def _install_runs(app: FastAPI, runs) -> None:
 def install(app: FastAPI, runs=None) -> None:
     from api import sim_api
 
+    _install_response_cache(app)
     _install_api_key(app)
     _install_sheet_store(app)
+    _install_prewarm(app)
     if runs is not None:
         _install_runs(app, runs)
     sim_api.install(app)
