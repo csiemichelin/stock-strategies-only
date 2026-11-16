@@ -43,7 +43,11 @@ def test_benchmark_buy_and_hold_with_costs():
 def _client(tmp_path, monkeypatch, fake_run):
     from api import backtest_api
 
-    monkeypatch.setenv("BACKTEST_FILE", str(tmp_path / "bt.json"))
+    from stock_strategies import webstore
+
+    monkeypatch.setenv("WEBSTORE_DIR", str(tmp_path / "ws"))
+    monkeypatch.delenv("GOOGLE_SHEET_ID", raising=False)
+    webstore._memory.clear()
     monkeypatch.delenv("RENDER", raising=False)
     monkeypatch.setattr(compare, "run", fake_run)
     backtest_api._last["result"] = None
@@ -70,7 +74,10 @@ def test_api_runs_in_background_and_keeps_result(tmp_path, monkeypatch):
         time.sleep(0.02)
     assert body["result"]["benchmark"]["return_pct"] == 2.0 and body["result"]["capital"] == 10_000
     assert body["job"]["params"]["strategy_id"] == "default"
-    mod._last["result"] = None  # 重啟後從檔案讀回
+    from stock_strategies import webstore
+
+    mod._last["result"] = None  # 重啟後從儲存讀回
+    webstore._memory.clear()
     assert c.get("/api/backtest").json()["result"]["start_date"] == START
 
 
