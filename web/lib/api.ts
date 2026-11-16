@@ -69,6 +69,23 @@ export type SimAccount = {
 };
 export type SimJob = { status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null; current: string | null; error: string | null };
 export type SimResponse = { account: SimAccount | null; job: SimJob };
+export type CurvePoint = { date: string; total: number };
+export type BacktestSide = {
+  final: number; pnl: number; return_pct: number; max_drawdown_pct: number; curve: CurvePoint[];
+  trades: number; win_rate: number | null; fees: number;
+  avg_win_pct?: number | null; avg_loss_pct?: number | null; profit_factor?: number | null; avg_exposure_pct?: number;
+};
+export type BacktestResult = {
+  strategy: { id: string; name: string }; capital: number; start_date: string; end_date: string; trading_days: number;
+  result: BacktestSide; benchmark: Partial<BacktestSide> & { stock_id: string; name: string; available: boolean; shares?: number; error?: string };
+  trades: SimTrade[]; finished_at?: string;
+};
+export type BacktestJob = {
+  status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null;
+  current: string | null; error: string | null; started_at: string | null;
+  params: { strategy_id: string; strategy_name: string; start_date: string; capital: number } | null;
+};
+export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null };
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
@@ -120,6 +137,9 @@ export const api = {
   getSim: (signal?: AbortSignal) => jfetch<SimResponse>("/api/sim", { signal }),
   startSim: (capital: number, strategy_id: string, start_date?: string) => jfetch<SimResponse>("/api/sim/start", { method: "POST", body: JSON.stringify({ capital, strategy_id, start_date: start_date || null }) }),
   stopSim: () => jfetch<SimResponse>("/api/sim/stop", { method: "POST" }),
+  getBacktest: (signal?: AbortSignal) => jfetch<BacktestResponse>("/api/backtest", { signal }),
+  startBacktest: (strategy_id: string, start_date: string, capital: number) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_id, start_date, capital }) }),
+  cancelBacktest: () => jfetch<BacktestResponse>("/api/backtest/cancel", { method: "POST" }),
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
   cancelRun: (id: string) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
