@@ -7,7 +7,32 @@ on:
   workflow_dispatch:  # 允許手動觸發測試
 
 jobs:
+  # 準時觸發改由 cron-job.org 呼叫 workflow_dispatch；GitHub 自己的 schedule 常延遲數小時，
+  # 只當備援：12 小時內已有成功（或執行中）的手動/外部觸發就跳過，避免重複推播
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          skip=false
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$GITHUB_WORKFLOW" -e workflow_dispatch -L 20 \
+              --json createdAt,conclusion \
+              -q '[.[] | select((.createdAt | fromdateiso8601) > (now - 43200)) | select(.conclusion != "failure" and .conclusion != "cancelled")] | length')
+            [ "${n:-0}" -gt 0 ] && skip=true
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "event=${{ github.event_name }} skip=$skip"
+
   run-premarket:
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
