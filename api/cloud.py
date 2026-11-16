@@ -322,7 +322,7 @@ def _install_runs(app: FastAPI, runs) -> None:
 
 
 def install(app: FastAPI, runs=None) -> None:
-    from api import sim_api
+    from api import backtest_api, sim_api
 
     _install_response_cache(app)
     _install_api_key(app)
@@ -331,3 +331,4 @@ def install(app: FastAPI, runs=None) -> None:
     if runs is not None:
         _install_runs(app, runs)
     sim_api.install(app)
+    backtest_api.install(app)
