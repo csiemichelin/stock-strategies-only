@@ -649,7 +649,13 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
             skipped.append({"stock_id": sid, "name": name, "reason": str(exc)[:120]})
             print(f"[replay] {sid} 略過：{exc}", file=sys.stderr)
 
+    quota_skips = [x for x in skipped if "額度" in x["reason"] or "限流" in x["reason"]]
+    if quota_skips and len(quota_skips) > 0.1 * max(1, len(watch)):
+        raise RuntimeError(f"FinMind 免費額度用完（每小時 600 次），有 {len(quota_skips)} 檔資料抓不到，"
+                           "結果會失真，請約一小時後再試，並避免和「開始選股」排在同一小時")
     idx = get_index_history("TAIEX")
+    if idx is None or idx.empty or "date" not in idx.columns:
+        raise RuntimeError("抓不到加權指數資料（多半是 FinMind 免費額度用完），請約一小時後再試")
     idx = idx.assign(date=idx["date"].astype(str).str[:10]).reset_index(drop=True)
     idx["ma"] = idx["close"].astype(float).rolling(int(params.get("market_filter_ma_period", 20))).mean()
     days = [d for d in idx["date"] if d >= start_date]
