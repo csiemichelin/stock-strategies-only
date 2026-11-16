@@ -137,6 +137,10 @@ function Report({ result, stale }: { result: BacktestResult; stale: boolean }) {
       <h2 className="text-lg font-medium">{stale ? "上一次的結果" : "回測結果"}：{result.strategy.name}</h2>
       <span className="text-sm text-muted">{result.start_date} ～ {result.end_date}・{result.trading_days} 個交易日・本金 {money(result.capital)}</span>
     </div>
+    {!!result.skipped?.length && <div className="rounded-xl border border-watch/30 bg-watch/5 p-4 text-sm leading-6">
+      ⚠️ 有 {result.skipped.length} 檔沒抓到資料、沒放進回測（{result.skipped.slice(0, 6).map(x => x.stock_id).join("、")}{result.skipped.length > 6 ? "…" : ""}）。
+      {result.skipped.some(x => /額度|限流/.test(x.reason)) ? "原因是 FinMind 免費額度（每小時 600 次）用完，約一小時後重跑，並避免同時按「開始選股」。" : `原因：${result.skipped[0].reason}`}
+    </div>}
     {diff != null && <div className={`card text-base ${diff >= 0 ? "border-rise/40" : "border-fall/40"}`}>
       {diff >= 0 ? "📈 策略贏過抱 0050" : "📉 策略輸給抱 0050"} <b className={tone(diff)}>{Math.abs(diff).toFixed(2)}</b> 個百分點
       <span className="ml-2 text-sm text-muted">（策略 {pct(s.return_pct)}，0050 {pct(b.return_pct)}；最大回撤 {pct(s.max_drawdown_pct, false)} vs {pct(b.max_drawdown_pct, false)}）</span>
