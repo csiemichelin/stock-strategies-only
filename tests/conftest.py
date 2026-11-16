@@ -11,6 +11,9 @@ def _isolate_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("FINMIND_TOKEN", "test-token")
     monkeypatch.setenv("PREWARM", "0")          # 不在測試裡背景打真 API
     monkeypatch.setenv("WEB_CACHE_TTL", "0")    # 回應快取另有專門測試
+    monkeypatch.setenv("WEBSTORE_DIR", str(tmp_path / "webstore"))
+    from stock_strategies import webstore
+    webstore._memory.clear()
     yield
 
 
