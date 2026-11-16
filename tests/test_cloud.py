@@ -83,3 +83,42 @@ def test_pull_restores_from_sheet(app_env):
         r = c.get("/api/strategies/restored", headers={"x-api-key": "secret"})
         assert r.status_code == 200 and r.json()["name"] == "還原"
     assert (tmp / "restored.json").exists()
+
+
+
+def test_latest_run_and_manual_line_push(app_env, monkeypatch):
+    import time
+
+    from fastapi import FastAPI
+
+    import api.cloud as cloud
+    import stock_strategies.line_push as lp
+    from stock_strategies import line_brief
+
+    main, _, _ = app_env
+    sent = []
+    monkeypatch.setenv("LINE_CHANNEL_TOKEN", "t")
+    monkeypatch.setenv("LINE_USER_ID", "U")
+    monkeypatch.setattr(lp, "send_line", sent.append)
+    monkeypatch.setattr(line_brief, "_index_moves", lambda: (None, None))
+
+    def fake_screen(strategy, limit=None, *, progress=None, cancel=None):
+        progress(completed=0, total=1, current="2330")
+        row = {"stock_id": "2330", "name": "台積電", "action": "BUY", "signal_score": 70,
+               "entry_price": 100, "stop_loss_price": 92, "target_price": 110}
+        return {"strategy": {"id": strategy["id"], "name": strategy["name"]},
+                "market": {"bullish": True, "close": 100, "ma20": 90}, "results": [row]}
+
+    main.runs._runner = fake_screen
+    cloud._install_runs(FastAPI(), main.runs)  # 用真正的包裝邏輯包住假 runner
+    h = {"x-api-key": "secret"}
+    with TestClient(main.app) as c:
+        assert c.get("/api/runs/latest", headers=h).json() == {"job": None}
+        job = c.post("/api/runs", json={"strategy_id": "default"}, headers=h).json()
+        for _ in range(100):
+            latest = c.get("/api/runs/latest", headers=h).json()["job"]
+            if latest["status"] == "completed":
+                break
+            time.sleep(0.05)
+        assert latest["id"] == job["id"] and latest["status"] == "completed"
+    assert sent and sent[0].startswith("🖐️ 手動觸發選股") and "2330 台積電" in sent[0]
