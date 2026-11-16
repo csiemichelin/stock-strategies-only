@@ -98,6 +98,9 @@ def _execute(payload: dict) -> None:
         if job.cancel.is_set() or result is None:
             job.update(status="cancelled", current=None, phase="已取消")
             return
+        from api.cloud import to_plain
+
+        result = to_plain(result)
         result["finished_at"] = datetime.now(TZ).isoformat(timespec="seconds")
         _save(result)
         job.update(status="completed", current=None, phase="完成")
