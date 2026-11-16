@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, errorMessage, Market, Strategy } from "@/lib/api";
+import { api, errorMessage, Market, RunResult, SavedRun, Strategy } from "@/lib/api";
 import { readCache, writeCache } from "@/lib/cache";
 import { SourceBadge } from "@/components/ActionBadge";
 import { EmptyState, ErrorCard, Skeleton } from "@/components/Feedback";
@@ -20,6 +20,22 @@ export default function Dashboard() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [reload, setReload] = useState(0);
   const run = useRun(picked);
+  const [lastRun, setLastRun] = useState<SavedRun | null>(null);
+  useEffect(() => { // 上次選股結果：先顯示這台裝置記住的，再向後端拿（後端存在 Google Sheet）
+    const cached = readCache<SavedRun>("lastRun");
+    if (cached) setLastRun(cached);
+    const controller = new AbortController();
+    api.lastRunResult(controller.signal).then(({ run: saved }) => {
+      if (saved && (!cached || saved.finished_at >= cached.finished_at)) { setLastRun(saved); writeCache("lastRun", saved); }
+    }).catch(() => {});
+    return () => controller.abort();
+  }, []);
+  const finishedResult = run.job?.status === "completed" ? run.result : null;
+  useEffect(() => {
+    if (!finishedResult) return;
+    const saved = { finished_at: new Date().toISOString(), result: finishedResult };
+    setLastRun(saved); writeCache("lastRun", saved);
+  }, [finishedResult]);
   useEffect(() => {
     const controller = new AbortController();
     const signal = controller.signal;
@@ -66,6 +82,19 @@ export default function Dashboard() {
         </div><div className="lg:border-l lg:border-line lg:pl-6"><RunControl run={run} disabled={!picked} /></div>
       </div>}
     </section>
-    {run.result ? <SignalResults run={run.result} /> : !run.running && <EmptyState title="準備好，讓數據說話">選擇一個策略並開始選股。完成後可比較評分、篩選訊號，並展開查看個股風險與交易參考。</EmptyState>}
+    {run.result ? <><QuotaNote result={run.result} /><SignalResults run={run.result} /></>
+      : run.running ? null
+      : lastRun ? <div className="space-y-3">
+          <p className="text-sm text-muted">上次選股結果・{new Date(lastRun.finished_at).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}・策略 {lastRun.result.strategy?.name}（再按「開始選股」會更新）</p>
+          <QuotaNote result={lastRun.result} /><SignalResults run={lastRun.result} /></div>
+      : <EmptyState title="準備好，讓數據說話">選擇一個策略並開始選股。完成後可比較評分、篩選訊號，並展開查看個股風險與交易參考。</EmptyState>}
+  </div>;
+}
+
+function QuotaNote({ result }: { result: RunResult }) {
+  const hit = result.results.filter(r => r.action === "ERROR" && r.risk_notes?.some(n => /額度|限流/.test(n))).length;
+  if (!hit) return null;
+  return <div className="rounded-xl border border-watch/30 bg-watch/5 p-4 text-sm leading-6">
+    ⚠️ 有 {hit} 檔因為 FinMind 免費額度（每小時 600 次）用完而沒有評分，顯示為 ERROR。約一小時後再按一次「開始選股」就會補上；同一小時內不要同時跑回測比較，兩者共用額度。
   </div>;
 }
