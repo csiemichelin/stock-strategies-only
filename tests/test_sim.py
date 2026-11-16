@@ -159,3 +159,21 @@ def test_sheet_load_is_one_batch_call_and_cached(monkeypatch, state):
     sim.load_state(fresh=True)
     assert fake.batch_calls == 2
     sim._cache.update(state=None, ts=0.0)
+
+
+def test_replay_pruning_gives_identical_trades(monkeypatch):
+    """略過「不可能 BUY」的日子不影響結果。"""
+    from stock_strategies import data, datasources, sheet
+
+    raws = {f"S{i}": _synthetic(n=900, seed=10 + i) for i in range(4)}
+    monkeypatch.setattr(sheet, "read_watchlist", lambda: [{"stock_id": k, "name": k} for k in raws])
+    monkeypatch.setattr(sim, "_full_history", lambda sid, years: raws[sid])
+    monkeypatch.setattr(data, "get_fundamental", lambda sid: {"eps": {2023: 6, 2024: 7}, "roe": {2023: 16, 2024: 18}}
+                        if sid != "S3" else {"eps": {2023: -1, 2024: 1}, "roe": {2023: 1, 2024: 2}})
+    idx = _synthetic(n=900, seed=99)
+    monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: idx)
+    start = raws["S0"]["date"].iloc[-150]
+    a = sim.replay(10_000, start, {"id": "default", "name": "預設"}, prune=True)
+    b = sim.replay(10_000, start, {"id": "default", "name": "預設"}, prune=False)
+    assert a["trades"] == b["trades"] and a["equity"] == b["equity"]
+    assert a["trades"], "合成資料應該要有交易，否則測試沒意義"
