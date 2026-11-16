@@ -268,3 +268,54 @@ def test_numpy_results_are_json_safe(app_env):
     comp = r.json()["result"]["results"][0]["components"]
     assert comp["fundamental_pass"] is True and comp["backtest_samples"] == 9 and comp["eps_min"] is None
     assert comp["when"].startswith("2026-11-16")
+
+
+def test_data_day_boundaries():
+    from datetime import datetime, timedelta, timezone
+
+    import api.cloud as cloud
+
+    tw = timezone(timedelta(hours=8))
+    assert cloud.data_day(datetime(2026, 11, 16, 14, 29, tzinfo=tw)) == "2026-11-13"  # 週一收盤前 → 上週五
+    assert cloud.data_day(datetime(2026, 11, 16, 14, 30, tzinfo=tw)) == "2026-11-16"  # 收盤資料出來後 → 今天
+    assert cloud.data_day(datetime(2026, 11, 17, 9, 0, tzinfo=tw)) == "2026-11-16"
+    assert cloud.data_day(datetime(2026, 11, 22, 20, 0, tzinfo=tw)) == "2026-11-20"  # 週日 → 週五
+
+
+def test_same_period_reuses_result(app_env, monkeypatch):
+    """同一資料日、同一策略再按選股：直接讀上次結果，不重跑、不重複推 LINE；額度不足或改了參數才重跑。"""
+    import api.cloud as cloud
+
+    calls, sent = [], []
+    monkeypatch.setattr(cloud, "_notify_line", lambda s, r: sent.append(1))
+
+    def runner(strategy, limit=None, *, progress=None, cancel=None):
+        calls.append(1)
+        note = ["FinMind 免費額度暫時用完"] if len(calls) == 1 else []
+        return {"strategy": {"id": strategy["id"], "name": strategy["name"]}, "market": {},
+                "results": [{"stock_id": "2885", "action": "ERROR" if note else "SKIP", "risk_notes": note}]}
+
+    wrapped = _wrap(cloud, runner)
+    s = {"id": "default", "name": "預設", "params": {"a": 1}}
+    first = wrapped(dict(s))
+    assert "reused" not in first and len(calls) == 1
+    second = wrapped(dict(s))  # 上次有額度不足的 ERROR → 要重跑補上
+    assert "reused" not in second and len(calls) == 2
+    seen = []
+    third = wrapped(dict(s), progress=lambda **st: seen.append(st))
+    assert third["reused"]["data_day"] == cloud.data_day() and len(calls) == 2 and len(sent) == 2
+    assert seen[-1]["completed"] == 1
+    fourth = wrapped({**s, "params": {"a": 2}})  # 策略參數改了 → 重跑
+    assert "reused" not in fourth and len(calls) == 3
+
+
+def _wrap(cloud, runner):
+    from fastapi import FastAPI
+
+    class FakeRuns:
+        pass
+
+    fake = FakeRuns()
+    fake._runner = runner
+    cloud._install_runs(FastAPI(), fake)
+    return fake._runner
