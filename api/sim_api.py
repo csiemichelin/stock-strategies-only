@@ -80,7 +80,7 @@ def install(app: FastAPI) -> None:
     def start_sim(payload: SimStartIn):
         if job.busy:
             raise HTTPException(409, "歷史回放進行中，請稍候")
-        current = sim.load_state()
+        current = sim.load_state(fresh=True)
         if current and current.get("status") == "running":
             raise HTTPException(409, "已有進行中的模擬，請先中止")
         strategy = loader.get_strategy(payload.strategy_id)
@@ -110,7 +110,7 @@ def install(app: FastAPI) -> None:
             job.cancel.set()
             job.update(phase="取消中")
             return {"account": None, "job": job.snapshot()}
-        state = sim.load_state()
+        state = sim.load_state(fresh=True)
         if not state:
             raise HTTPException(404, "目前沒有模擬帳戶")
         if state.get("status") == "running":
