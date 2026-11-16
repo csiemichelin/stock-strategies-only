@@ -21,7 +21,8 @@ def line_enabled() -> bool:
 
 def _strip_markdown(text: str) -> str:
     # 訊息格式原本寫給 Telegram Markdown；LINE 不支援，去掉 *粗體* 標記
-    return re.sub(r"\*([^*\n]+)\*", r"\1", text)
+    text = re.sub(r"\*([^*\n]+)\*", r"\1", text)
+    return re.sub(r"(?<![A-Za-z0-9])_([^_\n]+)_(?![A-Za-z0-9])", r"\1", text)
 
 
 def send_line(text: str):
