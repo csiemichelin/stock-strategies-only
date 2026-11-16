@@ -493,8 +493,11 @@ class _StockReplay:
         self.flag = np.zeros(n, dtype=bool)
         self.outcome = np.full(n, np.nan)
         opens, highs, lows, closes = (self.ind[c].to_numpy(dtype=float) for c in ("open", "high", "low", "close"))
+        self.tscore = np.zeros(n)
+        for i, row in enumerate(self.ind.to_dict("records")):  # 每天的技術分數先算好（dict 比 iloc 快很多）
+            self.tscore[i] = tech_score_at(row, params)["score"]
         for i in range(n - hold - 1):
-            if tech_score_at(self.ind.iloc[i], params)["score"] < min_score:
+            if self.tscore[i] < min_score:
                 continue
             entry = opens[i + 1]
             if not entry or np.isnan(entry) or entry <= 0 or i + 2 + hold > n:
@@ -508,6 +511,12 @@ class _StockReplay:
                 r = (closes[i + 1 + hold] - entry) / entry
             self.flag[i], self.outcome[i] = True, r
         self.hold = hold
+
+    def compact(self):
+        """pandas 3 的 Copy-on-Write 會在原表記住每個切片的參照，回放一年累積上百 MB；
+        定期換成新的表，舊參照就能釋放（Render 只有 512MB）。"""
+        self.raw = self.raw.copy()
+        self.ind = self.ind.copy()
 
     def window(self, date):
         import bisect
@@ -576,7 +585,39 @@ def _as_of(stock: _StockReplay, date: str, fund: dict):
         _ctx.cur = None
 
 
-def replay(capital: float, start_date: str, strategy: dict, *, progress=None, cancel=None) -> dict:
+def _full_history(stock_id: str, years: int):
+    """回放要比每日選股多一年的歷史；快取若是每日選股留下的（只有 3 年）就重抓一次。"""
+    from .cache import clear_cache
+    from .data import get_price_history
+
+    raw = get_price_history(stock_id, years)
+    need = datetime.now() - timedelta(days=365 * years + 60 - 20)
+    if len(raw) and str(raw["date"].iloc[0])[:10] > need.strftime("%Y-%m-%d"):
+        clear_cache("TaiwanStockPrice", stock_id)
+        raw = get_price_history(stock_id, years)
+    return raw
+
+
+_MAX_VOLUME_BONUS = 10 + 8 + 5 + 8  # volume.detect_patterns 所有加分項的總和（上限）
+
+
+def _fund_pass(fund: dict, params: dict) -> bool:
+    """與 evaluate() 的基本面判斷相同。"""
+    eps, roe = list(fund.get("eps", {}).values()), list(fund.get("roe", {}).values())
+    return (len(eps) >= 2 and len(roe) >= 2 and min(eps) > params["eps_threshold"]
+            and min(roe) > params["roe_threshold"])
+
+
+def _could_buy(st: "_StockReplay", i: int, params: dict, fund_ok: bool) -> bool:
+    """evaluate() 給 BUY 的必要條件：基本面門檻（若要求）且技術分數（含量價加分上限）夠高。"""
+    if params["fundamental_pass_required"] and not fund_ok:
+        return False
+    bonus = _MAX_VOLUME_BONUS if params["use_volume_patterns"] else 0
+    return min(100, st.tscore[i] + bonus) >= params["min_tech_score_for_buy"]
+
+
+def replay(capital: float, start_date: str, strategy: dict, *, progress=None, cancel=None,
+           prune: bool = True) -> dict:
     """從 start_date 回放到最新交易日，回傳 state（status=running，之後接每日排程）。"""
     from .data import get_fundamental, get_price_history
     from .datasources import get_index_history
@@ -599,7 +640,7 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
         sid, name = str(row["stock_id"]), row.get("name", "")
         report(completed=i, current=sid)
         try:
-            raw = get_price_history(sid, years + 1)
+            raw = _full_history(sid, years + 1)
             if len(raw) < 100:
                 continue
             stocks.append(_StockReplay(sid, name, raw, params, years))
@@ -612,17 +653,23 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
     idx["ma"] = idx["close"].astype(float).rolling(int(params.get("market_filter_ma_period", 20))).mean()
     days = [d for d in idx["date"] if d >= start_date]
     state = new_state(capital, strategy, days[0] if days else start_date, "replay")
+    fund_ok = {st.stock_id: _fund_pass(funds.get(st.stock_id, {}), params) for st in stocks}
     report(phase="逐日回放", completed=0, total=len(days), current=None)
     for n, day in enumerate(days):
         if cancel and cancel.is_set():
             break
         report(completed=n, current=day)
+        if n % 10 == 0:
+            for st in stocks:
+                st.compact()
         signals, bars = [], {}
         for st in stocks:
             s, L = st.window(day)
             if L == 0 or st.dates[L - 1] != day:
                 continue
             bars[st.stock_id] = st.raw.iloc[L - 1].to_dict()
+            if prune and not _could_buy(st, L - 1, params, fund_ok.get(st.stock_id, False)):
+                continue  # 這天不可能出現 BUY：模擬只看 BUY，略過 evaluate 結果完全相同
             with _as_of(st, day, funds.get(st.stock_id, {"eps": {}, "roe": {}})):
                 r = evaluate(st.stock_id, st.name, strategy=strategy)
             if r:
