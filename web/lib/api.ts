@@ -89,6 +89,12 @@ export type BacktestJob = {
   params: { strategy_id: string; strategy_name: string; start_date: string; capital: number } | null;
 };
 export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null };
+export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null };
+export type DaytradePlan = { trade_date: string; data_date: string; candidates: DaytradeCandidate[]; stats: Record<string, number>; params: Record<string, number>; notes: string[]; received_at?: string };
+export type DaytradeEvent = { type: string; ts: string; symbol?: string | null; name?: string | null; price?: number | null; shares?: number | null; pnl?: number | null; ok?: boolean | null; mode?: string | null; reason: string; extra?: Record<string, unknown> };
+export type DaytradeDay = { date: string; trades: number; pnl: number; wins: number; mode?: string | null };
+export type DaytradeBacktest = { summary: { days: number; trades: number; win_rate: number | null; pnl: number; profit_factor: number | null; breakeven_win_rate: number; by_mode: Record<string, number> }; note?: string; received_at?: string };
+export type DaytradeResponse = { plan: DaytradePlan | null; today: { date: string; events: DaytradeEvent[] }; history: DaytradeDay[]; backtest: DaytradeBacktest | null; heartbeat: { at: string | null; mode: string | null; note: string | null } };
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
@@ -146,5 +152,6 @@ export const api = {
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
   finmindUsage: (signal?: AbortSignal) => jfetch<{ usage: FinMindUsage | null }>("/api/finmind/usage", { signal }),
   lastRunResult: (signal?: AbortSignal) => jfetch<{ run: SavedRun | null }>("/api/runs/last-result", { signal }),
+  getDaytrade: (signal?: AbortSignal) => jfetch<DaytradeResponse>("/api/daytrade", { signal }),
   cancelRun: (id: string) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
