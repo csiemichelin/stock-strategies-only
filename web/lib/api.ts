@@ -65,36 +65,43 @@ export type SimOrder = { stock_id: string; name: string; signal_date: string; si
 export type SimTrade = { date: string; side: "BUY" | "SELL"; stock_id: string; name: string; shares: number; price: number; amount: number; fee: number; pnl?: number | null; pnl_pct?: number | null; reason: string };
 export type SimPoint = { date: string; cash: number; holdings: number; total: number };
 export type SimAccount = {
-  status: "running" | "stopped"; mode: "forward" | "replay"; strategy: { id: string; name: string };
+  slot?: string; status: "running" | "stopped"; mode: "forward" | "replay"; strategy: { id: string; name: string };
   params: { hold_days: number }; initial_capital: number; cash: number; start_date: string; last_date: string | null;
   created_at: string; stopped_at: string | null; positions: SimPosition[]; pending: SimOrder[]; trades: SimTrade[]; equity: SimPoint[];
   summary: { total: number; pnl: number; pnl_pct: number; cash: number; holdings: number; closed_trades: number; win_rate: number | null; max_drawdown_pct: number };
 };
 export type SimJob = { status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null; current: string | null; error: string | null };
-export type SimResponse = { account: SimAccount | null; job: SimJob };
+export type SimResponse = { account: SimAccount | null; accounts?: SimAccount[]; job: SimJob };
 export type CurvePoint = { date: string; total: number };
 export type BacktestSide = {
   final: number; pnl: number; return_pct: number; max_drawdown_pct: number; curve: CurvePoint[];
   trades: number; win_rate: number | null; fees: number;
   avg_win_pct?: number | null; avg_loss_pct?: number | null; profit_factor?: number | null; avg_exposure_pct?: number;
 };
+export type BacktestRun = { strategy: { id: string; name: string }; result: BacktestSide; trades: SimTrade[]; skipped?: { stock_id: string; name: string; reason: string }[] };
 export type BacktestResult = {
-  strategy: { id: string; name: string }; capital: number; start_date: string; end_date: string; trading_days: number;
-  result: BacktestSide; benchmark: Partial<BacktestSide> & { stock_id: string; name: string; available: boolean; shares?: number; error?: string };
+  strategy: { id: string; name: string } | null; capital: number; start_date: string; end_date: string; trading_days: number;
+  result: BacktestSide | null; benchmark: Partial<BacktestSide> & { stock_id: string; name: string; available: boolean; shares?: number; error?: string };
   trades: SimTrade[]; finished_at?: string; skipped?: { stock_id: string; name: string; reason: string }[];
+  runs?: BacktestRun[]; request?: BacktestJob["params"];
 };
 export type BacktestJob = {
   status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null;
   current: string | null; error: string | null; started_at: string | null;
-  params: { strategy_id: string; strategy_name: string; start_date: string; capital: number } | null;
+  params: { strategy_id: string; strategy_name: string; start_date: string; capital: number; strategy_ids?: string[]; include_daytrade?: boolean; daytrade_command?: string | null } | null;
 };
 export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null };
 export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null };
 export type DaytradePlan = { trade_date: string; data_date: string; candidates: DaytradeCandidate[]; stats: Record<string, number>; params: Record<string, number>; notes: string[]; received_at?: string };
 export type DaytradeEvent = { type: string; ts: string; symbol?: string | null; name?: string | null; price?: number | null; shares?: number | null; pnl?: number | null; ok?: boolean | null; mode?: string | null; reason: string; extra?: Record<string, unknown> };
 export type DaytradeDay = { date: string; trades: number; pnl: number; wins: number; mode?: string | null };
-export type DaytradeBacktest = { summary: { days: number; trades: number; win_rate: number | null; pnl: number; profit_factor: number | null; breakeven_win_rate: number; by_mode: Record<string, number> }; note?: string; received_at?: string };
-export type DaytradeResponse = { plan: DaytradePlan | null; today: { date: string; events: DaytradeEvent[] }; history: DaytradeDay[]; backtest: DaytradeBacktest | null; heartbeat: { at: string | null; mode: string | null; note: string | null } };
+export type DaytradeBacktest = {
+  summary: { days: number; trades: number; win_rate: number | null; pnl: number; profit_factor: number | null; breakeven_win_rate: number; by_mode: Record<string, number>; capital?: number; final?: number; return_pct?: number; max_drawdown_pct?: number };
+  note?: string; received_at?: string; curve?: CurvePoint[]; start_date?: string; end_date?: string; request?: { id: string; start_date?: string };
+  trades?: { date: string; stock_id: string; mode: string; entry: number; exit?: number; shares: number; pnl?: number; entry_reason?: string; exit_reason?: string }[];
+};
+export type DaytradeCommand = { id: string; type: "screen" | "backtest"; params: Record<string, unknown>; status: "pending" | "running" | "done" | "failed"; created_at: string; started_at?: string; finished_at?: string; message: string };
+export type DaytradeResponse = { plan: DaytradePlan | null; today: { date: string; events: DaytradeEvent[] }; history: DaytradeDay[]; backtest: DaytradeBacktest | null; heartbeat: { at: string | null; mode: string | null; note: string | null; agent_at?: string | null }; commands?: DaytradeCommand[] };
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
@@ -144,14 +151,16 @@ export const api = {
   startRun: (strategy_id: string) => jfetch<RunJob>("/api/runs", { method: "POST", body: JSON.stringify({ strategy_id }) }),
   getRun: (id: string, signal?: AbortSignal) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { signal }),
   getSim: (signal?: AbortSignal) => jfetch<SimResponse>("/api/sim", { signal }),
-  startSim: (capital: number, strategy_id: string, start_date?: string) => jfetch<SimResponse>("/api/sim/start", { method: "POST", body: JSON.stringify({ capital, strategy_id, start_date: start_date || null }) }),
-  stopSim: () => jfetch<SimResponse>("/api/sim/stop", { method: "POST" }),
+  startSim: (capital: number, strategy_ids: string[], start_date?: string) => jfetch<SimResponse>("/api/sim/start", { method: "POST", body: JSON.stringify({ capital, strategy_ids, start_date: start_date || null }) }),
+  stopSim: (slot?: string) => jfetch<SimResponse>("/api/sim/stop", slot == null ? { method: "POST" } : { method: "POST", body: JSON.stringify({ slot }) }),
+  removeSim: (slot: string) => jfetch<SimResponse>("/api/sim/remove", { method: "POST", body: JSON.stringify({ slot }) }),
   getBacktest: (signal?: AbortSignal) => jfetch<BacktestResponse>("/api/backtest", { signal }),
-  startBacktest: (strategy_id: string, start_date: string, capital: number) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_id, start_date, capital }) }),
+  startBacktest: (strategy_ids: string[], include_daytrade: boolean, start_date: string, capital: number) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_ids, include_daytrade, start_date, capital }) }),
   cancelBacktest: () => jfetch<BacktestResponse>("/api/backtest/cancel", { method: "POST" }),
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
   finmindUsage: (signal?: AbortSignal) => jfetch<{ usage: FinMindUsage | null }>("/api/finmind/usage", { signal }),
   lastRunResult: (signal?: AbortSignal) => jfetch<{ run: SavedRun | null }>("/api/runs/last-result", { signal }),
   getDaytrade: (signal?: AbortSignal) => jfetch<DaytradeResponse>("/api/daytrade", { signal }),
+  daytradeCommand: (type: "screen" | "backtest", params: Record<string, unknown> = {}) => jfetch<DaytradeCommand>("/api/daytrade/commands", { method: "POST", body: JSON.stringify({ type, params }) }),
   cancelRun: (id: string) => jfetch<RunJob>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
