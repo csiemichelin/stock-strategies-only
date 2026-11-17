@@ -60,11 +60,12 @@ export default function DaytradePage() {
 
 function Status({ data }: { data: DaytradeResponse }) {
   const hb = data.heartbeat;
-  const age = hb.at ? (Date.now() - new Date(hb.at).getTime()) / 60_000 : null;
+  const last = [hb.at, hb.agent_at].filter(Boolean).sort().pop() || null;
+  const age = last ? (Date.now() - new Date(last).getTime()) / 60_000 : null;
   const alive = age != null && age < 10;
   return <div className="card flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
     <span className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${alive ? "bg-emerald-400" : "bg-zinc-500"}`} />
-      本機程式{hb.at ? `最後回報 ${hb.at.slice(5, 10)} ${hm(hb.at)}` : "這次雲端重啟後還沒回報"}{hb.note ? `（${hb.note}）` : ""}</span>
+      本機程式{last ? `最後回報 ${last.slice(5, 10)} ${hm(last)}` : "這次雲端重啟後還沒回報"}{hb.note ? `（${hb.note}）` : ""}</span>
     {hb.mode && <span className={`rounded-md px-2 py-0.5 text-xs ${hb.mode === "live" ? "bg-red-500/15 text-red-300" : "bg-accent/10 text-blue-300"}`}>{MODE[hb.mode] || hb.mode}</span>}
     <span className="text-muted">含手續費與當沖稅，停利 1% / 停損 0.8% 時，勝率要約 7 成才打平。</span>
   </div>;
