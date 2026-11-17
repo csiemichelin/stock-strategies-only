@@ -64,6 +64,8 @@ def _expire(cmds: list[dict]) -> bool:
     for c in cmds:
         if c["status"] == "running" and c.get("started_at"):
             started = datetime.fromisoformat(c["started_at"])
+            if c.get("progress_at"):  # 有在回報進度就從最後一次回報算
+                started = max(started, datetime.fromisoformat(c["progress_at"]))
             if _now() - started > timedelta(minutes=STALE_MINUTES):
                 c.update(status="failed", message="本機程式太久沒回報（可能被關掉），請重新送出", finished_at=_now().isoformat(timespec="seconds"))
                 changed = True
@@ -296,6 +298,18 @@ def install(app: FastAPI) -> None:
             if changed:
                 webstore.save(COMMANDS_KEY, cmds)
         return {"command": cmd}
+
+    @app.post("/api/daytrade/commands/{cmd_id}/progress")
+    def command_progress(cmd_id: str, done: CommandDone):
+        _heartbeat.update(agent_at=_now().isoformat(timespec="seconds"))
+        with _lock:
+            cmds = _commands()
+            cmd = next((c for c in cmds if c["id"] == cmd_id), None)
+            if cmd is None:
+                raise HTTPException(404, "找不到這個指令")
+            cmd.update(message=done.message[:300], progress_at=_now().isoformat(timespec="seconds"))
+            webstore.save(COMMANDS_KEY, cmds)
+        return cmd
 
     @app.post("/api/daytrade/commands/{cmd_id}/done")
     def command_done(cmd_id: str, done: CommandDone):
