@@ -149,10 +149,63 @@ def screen(rows: list[dict], avg5: dict[str, float], brokers: dict[str, list[dic
             if share is not None and share >= p["max_daytrader_buy_share"]:
                 stats["daytrader"] += 1
                 continue
-        picked.append({**r, "change_pct": round(chg, 2), "vwap": round(vwap, 2), "volume_ratio": round(ratio, 2),
-                       "daytrader_share": None if share is None else round(share, 4)})
-    picked.sort(key=lambda x: -x["amount"])
+        item = {**r, "change_pct": round(chg, 2), "vwap": round(vwap, 2), "volume_ratio": round(ratio, 2),
+                "daytrader_share": None if share is None else round(share, 4)}
+        item["score"], item["score_parts"] = score(item)
+        picked.append(item)
+    picked.sort(key=lambda x: (-x["score"], -x["amount"]))
     return picked[: p["max_candidates"]], stats
+
+
+SCORE_GOOD = 60  # 這個分數以上算「推薦」，收盤後檢討命中率
+
+
+def score(c: dict) -> tuple[int, dict]:
+    """隔天動能延續的把握度 0–100：量能、收在高點、站穩均價、漲幅甜蜜點、流動性、隔日沖賣壓。"""
+    parts = {}
+    parts["量能"] = 25 * min(max((c.get("volume_ratio") or 0) - 1, 0) / 3, 1)            # 2 倍 8 分、4 倍以上 25 分
+    hi, lo, close = c.get("high") or 0, c.get("low") or 0, c["close"]
+    parts["收高"] = 20 * ((close - lo) / (hi - lo) if hi > lo else 1.0)                    # 收在當天最高 → 20
+    vwap = c.get("vwap") or close
+    parts["強於均價"] = 15 * min(max(close / vwap - 1, 0) / 0.02, 1)                      # 收盤高於均價 2% 以上 → 15
+    parts["漲幅"] = 15 * max(0.0, 1 - abs((c.get("change_pct") or 0) - 5) / 1.5)          # 5% 最好，3.5/6.5 → 0
+    amt = c.get("amount") or 0
+    parts["流動性"] = 10 * min(max(math.log10(max(amt, 1) / 5e8), 0), 1)                   # 5 億 0 分、50 億 10 分
+    share = c.get("daytrader_share")
+    parts["隔日沖少"] = 7.5 if share is None else 15 * max(0.0, 1 - share / 0.10)
+    parts = {k: round(v, 1) for k, v in parts.items()}
+    return int(round(sum(parts.values()))), parts
+
+
+# ---------------------------------------------------------------- 5. 收盤後檢討
+
+
+def review_outcome(bars: list[dict], prev_close: float, p: dict) -> dict:
+    """用隔天 3 分 K（開始時間標示）檢討：若在 09:03（開盤區間結束）進場，先碰停利還是先碰停損。
+    同一根 K 棒兩個都碰到 → 保守算停損；都沒碰到 → 13:20 前最後一根收盤結算。"""
+    bars = [b for b in sorted(bars, key=lambda b: b["time"]) if b["time"] < p["force_close"]]
+    if not bars:
+        return {"outcome": "no_data"}
+    entry_bar = next((i for i, b in enumerate(bars) if b["time"] >= "09:00"), 0)
+    entry = bars[entry_bar]["close"]
+    tp, sl = entry * (1 + p["take_profit_pct"] / 100), entry * (1 - p["stop_loss_pct"] / 100)
+    rest = bars[entry_bar + 1:]
+    outcome, exit_price, exit_time = "flat", (rest[-1]["close"] if rest else entry), (rest[-1]["time"] if rest else bars[entry_bar]["time"])
+    for b in rest:
+        hit_tp, hit_sl = b["high"] >= tp, b["low"] <= sl
+        if hit_sl:
+            outcome, exit_price, exit_time = "loss", sl, b["time"]
+            break
+        if hit_tp:
+            outcome, exit_price, exit_time = "win", tp, b["time"]
+            break
+    high = max([b["high"] for b in rest] or [entry])
+    low = min([b["low"] for b in rest] or [entry])
+    cost_pct = (2 * p["fee_rate"] * p["fee_discount"] + p["daytrade_tax_rate"]) * 100
+    return {"outcome": outcome, "entry": round(entry, 2), "exit": round(exit_price, 2), "exit_time": exit_time,
+            "ret_pct": round((exit_price / entry - 1) * 100 - cost_pct, 2),
+            "gap_pct": round((bars[0]["open"] / prev_close - 1) * 100, 2) if prev_close else None,
+            "max_up_pct": round((high / entry - 1) * 100, 2), "max_down_pct": round((low / entry - 1) * 100, 2)}
 
 
 # ---------------------------------------------------------------- 2. 盤前
