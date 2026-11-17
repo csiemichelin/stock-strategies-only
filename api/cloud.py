@@ -466,3 +466,4 @@ def install(app: FastAPI, runs=None) -> None:
         _install_runs(app, runs)
     sim_api.install(app)
     backtest_api.install(app)
+    daytrade_api.install(app)
