@@ -108,3 +108,44 @@ def run(capital: float, start_date: str, strategy: dict, *, progress=None, cance
         "trades": final_state["trades"],
         "skipped": state.get("skipped", []),
     }
+
+
+def benchmark_only(capital: float, start_date: str) -> dict:
+    """只比當沖（雲端不跑一般策略）時，0050 自己用開始日之後的交易日。"""
+    from .data import get_price_history
+
+    px = get_price_history(BENCHMARK_ID, 2)
+    days = sorted(str(d)[:10] for d in px["date"] if str(d)[:10] >= start_date)
+    bench = benchmark(capital, days, px)
+    return {"strategy": None, "capital": capital, "start_date": days[0] if days else start_date,
+            "end_date": days[-1] if days else start_date, "trading_days": len(days), "result": None,
+            "benchmark": {"stock_id": BENCHMARK_ID, "name": BENCHMARK_NAME, **bench}, "trades": [], "skipped": [],
+            "runs": []}
+
+
+def run_many(capital: float, start_date: str, strategies: list[dict], *, progress=None, cancel=None) -> dict | None:
+    """多個策略依序回放（資料有快取，第二個之後很少再用 FinMind 額度），0050 只算一次。"""
+    if not strategies:
+        return benchmark_only(capital, start_date)
+    runs, first = [], None
+    for i, strategy in enumerate(strategies, 1):
+        label = f"[{i}/{len(strategies)}] {strategy.get('name', strategy.get('id'))}"
+
+        def prog(_label=label, **kw):
+            if progress:
+                if "phase" in kw and kw["phase"]:
+                    kw["phase"] = f"{_label}・{kw['phase']}"
+                progress(**kw)
+
+        if progress:
+            progress(phase=f"{label}・準備中", completed=0, total=None, current=None)
+        res = run(capital, start_date, strategy, progress=prog, cancel=cancel)
+        if res is None:
+            return None
+        first = first or res
+        runs.append({"strategy": res.get("strategy"), "result": res.get("result"), "trades": res.get("trades", []),
+                     "skipped": res.get("skipped", [])})
+        import gc
+
+        gc.collect()
+    return {**first, "runs": runs}

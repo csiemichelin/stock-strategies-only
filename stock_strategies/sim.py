@@ -266,8 +266,20 @@ def summary_lines(state: dict, events: list[dict]) -> list[str]:
 # ---------------------------------------------------------------- 儲存
 
 
-def _local_path() -> Path:
-    return Path(os.environ.get("SIM_STATE_FILE", Path(__file__).resolve().parent.parent / ".cache" / "sim_state.json"))
+def _local_path(slot: str = "") -> Path:
+    base = Path(os.environ.get("SIM_STATE_FILE", Path(__file__).resolve().parent.parent / ".cache" / "sim_state.json"))
+    return base if not slot else base.with_name(f"{base.stem}_{slot}{base.suffix}")
+
+
+SLOT_RE = __import__("re").compile(r"^[a-zA-Z0-9_-]{1,60}$")
+
+
+def _tabs(slot: str = "") -> tuple[str, str, str]:
+    """帳戶分頁：第一個帳戶沿用 SimState/SimTrades/SimEquity，其他帳戶加「_策略代號」。"""
+    if slot and not SLOT_RE.match(slot):
+        raise ValueError(f"帳戶代號格式錯誤：{slot}")
+    sfx = f"_{slot}" if slot else ""
+    return f"SimState{sfx}", f"SimTrades{sfx}", f"SimEquity{sfx}"
 
 
 def _use_sheet() -> bool:
@@ -288,18 +300,24 @@ def _ws(sh, title, rows=1000, cols=12):
         return sh.add_worksheet(title=title, rows=rows, cols=cols)
 
 
-_cache: dict = {"state": None, "ts": 0.0}
+_cache: dict = {"state": None, "ts": 0.0}  # 第一個帳戶（slot ""）
+_slot_cache: dict[str, dict] = {}          # 其他帳戶
+_slots_cache: dict = {"slots": None, "ts": 0.0}
+
+
+def _cache_for(slot: str) -> dict:
+    return _cache if not slot else _slot_cache.setdefault(slot, {"state": None, "ts": 0.0})
 
 
 def _cache_ttl() -> float:
     return float(os.environ.get("SIM_CACHE_TTL", "60"))
 
 
-def _remember(state: dict | None) -> None:
+def _remember(state: dict | None, slot: str = "") -> None:
     import copy
     import time
 
-    _cache.update(state=copy.deepcopy(state), ts=time.monotonic())
+    _cache_for(slot).update(state=copy.deepcopy(state), ts=time.monotonic())
 
 
 def _rows_to_records(values: list[list]) -> list[dict]:
@@ -314,19 +332,20 @@ def _rows_to_records(values: list[list]) -> list[dict]:
     return out
 
 
-def _read_sheet_state(sh) -> dict | None:
+def _read_sheet_state(sh, slot: str = "") -> dict | None:
     """一次 API 呼叫讀三個分頁（原本 6 次：每個分頁先查 metadata 再讀值）。"""
+    t_state, t_trades, t_equity = _tabs(slot)
     try:
-        res = sh.values_batch_get(["'SimState'!A2", "'SimTrades'!A1:K", "'SimEquity'!A1:D"])
+        res = sh.values_batch_get([f"'{t_state}'!A2", f"'{t_trades}'!A1:K", f"'{t_equity}'!A1:D"])
         core_v, trades_v, equity_v = (r.get("values", []) for r in res["valueRanges"])
         core = core_v[0][0] if core_v and core_v[0] else ""
         trades, equity = _rows_to_records(trades_v), _rows_to_records(equity_v)
     except Exception:  # 分頁還不存在等 → 走原本逐頁讀（會順便建立分頁）
-        core = _ws(sh, "SimState", rows=5, cols=2).acell("A2").value
+        core = _ws(sh, t_state, rows=5, cols=2).acell("A2").value
         if not core:
             return None
-        trades = _ws(sh, "SimTrades").get_all_records(numericise_ignore=["all"])
-        equity = _ws(sh, "SimEquity").get_all_records(numericise_ignore=["all"])
+        trades = _ws(sh, t_trades).get_all_records(numericise_ignore=["all"])
+        equity = _ws(sh, t_equity).get_all_records(numericise_ignore=["all"])
     if not core:
         return None
     state = json.loads(core)
@@ -335,22 +354,53 @@ def _read_sheet_state(sh) -> dict | None:
     return state
 
 
-def load_state(fresh: bool = False) -> dict | None:
+def load_state(fresh: bool = False, slot: str = "") -> dict | None:
     """讀模擬帳戶。Sheet 模式下同一行程 60 秒內重用記憶體（每日排程在 GitHub Actions 另一個行程寫入，最晚 60 秒後看到）。"""
     import copy
     import time
 
     with _store_lock:
         if not _use_sheet():
-            p = _local_path()
-            return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
-        if not fresh and _cache["ts"] and time.monotonic() - _cache["ts"] < _cache_ttl():
-            return copy.deepcopy(_cache["state"])
+            p = _local_path(slot)
+            state = json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+        else:
+            c = _cache_for(slot)
+            if not fresh and c["ts"] and time.monotonic() - c["ts"] < _cache_ttl():
+                state = copy.deepcopy(c["state"])
+            else:
+                from .sheet import get_gsheet
+
+                state = _read_sheet_state(get_gsheet(), slot)
+                _remember(state, slot)
+        if state is not None:
+            state["slot"] = slot
+        return state
+
+
+def list_slots(fresh: bool = False) -> list[str]:
+    """有哪些帳戶（不管進行中或已中止）。"""
+    import time
+
+    with _store_lock:
+        if not _use_sheet():
+            base = _local_path()
+            out = [""] if base.exists() else []
+            out += sorted(p.stem[len(base.stem) + 1:] for p in base.parent.glob(f"{base.stem}_*{base.suffix}"))
+            return out
+        if not fresh and _slots_cache["slots"] is not None and time.monotonic() - _slots_cache["ts"] < _cache_ttl():
+            return list(_slots_cache["slots"])
         from .sheet import get_gsheet
 
-        state = _read_sheet_state(get_gsheet())
-        _remember(state)
-        return state
+        titles = [w.title for w in get_gsheet().worksheets()]
+        out = (["" ] if "SimState" in titles else []) + sorted(t[len("SimState_"):] for t in titles if t.startswith("SimState_"))
+        _slots_cache.update(slots=out, ts=time.monotonic())
+        return list(out)
+
+
+def load_all(fresh: bool = False) -> list[dict]:
+    """所有帳戶（進行中排前面）。"""
+    states = [s for s in (load_state(fresh, slot) for slot in list_slots(fresh)) if s]
+    return sorted(states, key=lambda s: (s.get("status") != "running", s.get("created_at") or ""))
 
 
 def _typed(row: dict, numeric) -> dict:
@@ -365,39 +415,53 @@ def _typed(row: dict, numeric) -> dict:
     return out
 
 
-def save_state(state: dict) -> None:
+def save_state(state: dict, slot: str | None = None) -> None:
+    slot = state.get("slot", "") if slot is None else slot
+    state = {**state, "slot": slot}
     with _store_lock:
         if not _use_sheet():
-            p = _local_path()
+            p = _local_path(slot)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
             return
         from .sheet import get_gsheet
 
         sh = get_gsheet()
+        t_state, t_trades, t_equity = _tabs(slot)
         core = {k: v for k, v in state.items() if k not in ("trades", "equity")}
-        ws = _ws(sh, "SimState", rows=5, cols=2)
+        ws = _ws(sh, t_state, rows=5, cols=2)
         ws.update(range_name="A1:A2", values=[["state（勿手動修改）"], [json.dumps(core, ensure_ascii=False)]],
                   value_input_option="RAW")
-        for title, cols, rows in (("SimTrades", TRADE_COLS, state["trades"]), ("SimEquity", EQUITY_COLS, state["equity"])):
+        for title, cols, rows in ((t_trades, TRADE_COLS, state["trades"]), (t_equity, EQUITY_COLS, state["equity"])):
             w = _ws(sh, title, rows=max(1000, len(rows) + 10), cols=len(cols))
             w.clear()
             data = [cols] + [["" if r.get(c) is None else r.get(c) for c in cols] for r in rows]
             w.update(range_name="A1", values=data, value_input_option="RAW")
-        _remember(state)
+        _remember(state, slot)
+        _slots_cache.update(slots=None, ts=0.0)
 
 
-def clear_state() -> None:
+def clear_state(slot: str = "") -> None:
     with _store_lock:
         if not _use_sheet():
-            _local_path().unlink(missing_ok=True)
+            _local_path(slot).unlink(missing_ok=True)
             return
         from .sheet import get_gsheet
 
         sh = get_gsheet()
-        for title in ("SimState", "SimTrades", "SimEquity"):
-            _ws(sh, title).clear()
-        _remember(None)
+        if slot:  # 其他帳戶直接刪分頁
+            import gspread
+
+            for title in _tabs(slot):
+                try:
+                    sh.del_worksheet(sh.worksheet(title))
+                except gspread.WorksheetNotFound:
+                    pass
+        else:
+            for title in _tabs(""):
+                _ws(sh, title).clear()
+        _remember(None, slot)
+        _slots_cache.update(slots=None, ts=0.0)
 
 
 # ---------------------------------------------------------------- 每日排程
@@ -440,24 +504,42 @@ def advance(state: dict, signals: list[dict] | None, signal_date: str) -> list[d
     return events
 
 
-def daily_update(results: list[dict]) -> list[str]:
-    """main.py 每日呼叫。沒有進行中的模擬就什麼都不做。"""
+def daily_update(results: list[dict], evaluate_for=None) -> list[str]:
+    """main.py 每日呼叫。每個進行中的帳戶各自推進；不是預設策略的帳戶用 evaluate_for(strategy) 重算訊號
+    （同一個行程內股價有快取，幾乎不再用 FinMind 額度）。沒有 evaluate_for 時沿用預設策略的訊號。"""
     global LAST_SUMMARY
     LAST_SUMMARY = []
     try:
-        state = load_state()
-        if not state or state.get("status") != "running":
-            return []
-        dates = [r.get("date") for r in results if r.get("date")]
-        signal_date = _latest_bar_date() or (max(dates) if dates else datetime.now(TZ).strftime("%Y-%m-%d"))
-        events = advance(state, results, signal_date)
-        save_state(state)
-        LAST_SUMMARY = summary_lines(state, events)
-        print("[sim] " + " / ".join(LAST_SUMMARY))
-        return LAST_SUMMARY
+        accounts = [s for s in load_all(fresh=True) if s.get("status") == "running"]
     except Exception as exc:  # 模擬失敗不影響每日選股
-        print(f"[sim] 模擬帳戶更新失敗：{exc}", file=sys.stderr)
+        print(f"[sim] 模擬帳戶讀取失敗：{exc}", file=sys.stderr)
         return []
+    if not accounts:
+        return []
+    dates = [r.get("date") for r in results if r.get("date")]
+    signal_date = _latest_bar_date() or (max(dates) if dates else datetime.now(TZ).strftime("%Y-%m-%d"))
+    out: list[str] = []
+    for state in accounts:
+        try:
+            sid = state["strategy"]["id"]
+            signals = results
+            if sid != "default" and evaluate_for is not None:
+                from .loader import get_strategy
+
+                strategy = get_strategy(sid)
+                if strategy:
+                    signals = evaluate_for(strategy)
+            events = advance(state, signals, signal_date)
+            save_state(state)
+            lines = summary_lines(state, events)
+            if len(accounts) > 1:
+                lines[0] = lines[0].replace("💼 模擬帳戶", f"💼 模擬帳戶・{state['strategy']['name']}", 1)
+            out += lines
+            print("[sim] " + " / ".join(lines))
+        except Exception as exc:  # noqa: BLE001 一個帳戶失敗不影響其他帳戶
+            print(f"[sim] {state.get('strategy', {}).get('name')} 更新失敗：{exc}", file=sys.stderr)
+    LAST_SUMMARY = out
+    return out
 
 
 def _latest_bar_date() -> str | None:
