@@ -3,6 +3,7 @@
 POST /api/daytrade/plan       隔天要觀察的候選名單（盤後選股結果）
 POST /api/daytrade/event      macro / preopen / entry / exit / halt / summary / info / error / heartbeat
 POST /api/daytrade/backtest   本機回測結果
+POST /api/daytrade/review     收盤後檢討：推薦名單實際有沒有達到停利（算命中率）
 GET  /api/daytrade            網頁用：計畫、今天的事件、最近每日損益、回測、本機程式最後回報時間
 GET  /api/daytrade/macro      本機 08:30 查：台指期夜盤、台積電 ADR、那斯達克漲跌
 POST /api/daytrade/commands   網頁請本機程式做事：{type: screen|backtest, params}
@@ -28,7 +29,7 @@ TZ = timezone(timedelta(hours=8))
 _lock = threading.Lock()
 _heartbeat: dict = {"at": None, "mode": None, "note": None, "agent_at": None}
 _macro_cache: dict = {"day": None, "value": None}
-LINE_EVENTS = {"plan", "macro", "preopen", "entry", "exit", "halt", "summary", "error"}
+LINE_EVENTS = {"plan", "macro", "alert", "entry", "exit", "halt", "summary", "error"}  # 每檔試撮結果只記錄，改推一則 alert
 
 
 class PlanIn(BaseModel):
@@ -84,7 +85,7 @@ def enqueue(type_: str, params: dict | None = None) -> dict:
 
 
 class EventIn(BaseModel):
-    type: str = Field(pattern=r"^(macro|preopen|entry|exit|halt|summary|info|error|heartbeat)$")
+    type: str = Field(pattern=r"^(macro|preopen|alert|entry|exit|halt|summary|info|error|heartbeat)$")
     symbol: Optional[str] = None
     name: Optional[str] = None
     price: Optional[float] = None
@@ -125,7 +126,9 @@ def plan_text(plan: dict) -> str:
         lines.append("今天沒有符合條件的標的，明天不做當沖。")
     for c in cands:
         share = c.get("daytrader_share")
-        lines.append(f"{c['stock_id']} {c.get('name', '')}　收 {c['close']:g}（{c['change_pct']:+.1f}%）"
+        sc = c.get("score")
+        lines.append(f"{'⭐' if sc is not None and sc >= 60 else '・'}{c['stock_id']} {c.get('name', '')}"
+                     + ("" if sc is None else f" {sc} 分") + f"　收 {c['close']:g}（{c['change_pct']:+.1f}%）"
                      f"量 {c['volume_lots']:,.0f} 張・{c['volume_ratio']:.1f} 倍"
                      + ("" if share is None else f"・隔日沖 {share * 100:.0f}%"))
     lines += [""] + [f"・{n}" for n in plan.get("notes", [])] + ["明早 08:59 盤前體檢後再通知能不能做。"]
@@ -144,6 +147,8 @@ def event_text(ev: dict) -> str | None:
     if t == "exit":
         pnl = ev.get("pnl") or 0
         return f"{'💰' if pnl > 0 else '🔻'} 當沖出場{tag} {sym} @{ev.get('price')}　{pnl:+,.0f} 元\n{ev['reason']}"
+    if t == "alert":
+        return f"🔔 當沖{tag}：{ev['reason']}"
     if t in ("halt", "error"):
         return f"⚠️ 當沖{tag}：{ev['reason']}"
     if t == "summary":
@@ -164,6 +169,39 @@ def _append_event(ev: dict) -> None:
                     "wins": sum(1 for e in exits if (e.get("pnl") or 0) > 0), "mode": ev.get("mode")}
             hist = [h for h in hist if h["date"] != item["date"]] + [item]
             webstore.save("daytrade_history", hist[-120:])
+
+
+class ReviewIn(BaseModel):
+    trade_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    data_date: str = ""
+    items: list[dict]
+    take_profit_pct: float = 1.0
+    stop_loss_pct: float = 0.8
+
+
+OUTCOME = {"win": "達標", "loss": "停損", "flat": "持平", "no_data": "無資料"}
+
+
+def review_stats(items: list[dict]) -> dict:
+    valid = [i for i in items if i.get("outcome") in ("win", "loss", "flat")]
+    rec = [i for i in valid if i.get("recommended")]
+    rate = lambda xs: round(sum(1 for i in xs if i["outcome"] == "win") / len(xs) * 100, 1) if xs else None  # noqa: E731
+    return {"count": len(valid), "wins": sum(1 for i in valid if i["outcome"] == "win"),
+            "losses": sum(1 for i in valid if i["outcome"] == "loss"), "hit_rate": rate(valid),
+            "recommended": len(rec), "recommended_hit_rate": rate(rec),
+            "avg_ret_pct": round(sum(i.get("ret_pct") or 0 for i in valid) / len(valid), 2) if valid else None}
+
+
+def review_text(r: dict) -> str:
+    s = r["stats"]
+    lines = [f"📋 當沖檢討 {r['trade_date'][5:]}：{s['count']} 檔，達標 {s['wins']}、停損 {s['losses']}"
+             + (f"（命中率 {s['hit_rate']:.0f}%）" if s["hit_rate"] is not None else "")]
+    for i in r["items"]:
+        if i.get("outcome") == "no_data":
+            continue
+        lines.append(f"{'⭐' if i.get('recommended') else '・'}{i['stock_id']} {i.get('name', '')} {i.get('score')} 分 → "
+                     f"{OUTCOME.get(i['outcome'], i['outcome'])} {i.get('ret_pct', 0):+.2f}%（最高 {i.get('max_up_pct', 0):+.1f}%）")
+    return "\n".join(lines)
 
 
 def _us_change(stock_id: str) -> float | None:
@@ -230,6 +268,17 @@ def install(app: FastAPI) -> None:
         webstore.save("daytrade_backtest", {**result, "received_at": _now().isoformat(timespec="seconds")})
         return {"ok": True}
 
+    @app.post("/api/daytrade/review")
+    def post_review(review: ReviewIn):
+        data = {**review.model_dump(), "stats": review_stats(review.items),
+                "received_at": _now().isoformat(timespec="seconds")}
+        with _lock:
+            reviews = [r for r in (webstore.load("daytrade_reviews") or []) if r["trade_date"] != review.trade_date]
+            reviews = sorted(reviews + [data], key=lambda r: r["trade_date"])[-250:]
+            webstore.save("daytrade_reviews", reviews)
+        _push(review_text(data))
+        return {"ok": True, "stats": data["stats"]}
+
     @app.post("/api/daytrade/commands")
     def post_command(cmd: CommandIn):
         return enqueue(cmd.type, cmd.params)
@@ -276,4 +325,5 @@ def install(app: FastAPI) -> None:
 
         return {"plan": load("daytrade_plan"), "today": load(f"daytrade_day_{_today()}", {"date": _today(), "events": []}),
                 "history": load("daytrade_history", []), "backtest": load("daytrade_backtest"),
-                "heartbeat": dict(_heartbeat), "commands": load(COMMANDS_KEY, [])[-10:]}
+                "heartbeat": dict(_heartbeat), "commands": load(COMMANDS_KEY, [])[-10:],
+                "reviews": load("daytrade_reviews", [])[-120:]}
