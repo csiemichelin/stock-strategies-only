@@ -121,7 +121,14 @@ def main():
         stats = None
 
     # 6b. 模擬帳戶（網頁「模擬」頁開始後才會動作；結果附在 LINE 每日報告最後）
-    run_daily_simulation(results)
+    def evaluate_for(strategy):
+        """其他策略的模擬帳戶：同一份觀察池用該策略重算（股價、財報已在快取，幾乎不再耗 FinMind 額度）。"""
+        out = [r for r in (evaluate(str(row["stock_id"]), row.get("name", ""), strategy) for row in watchlist) if r]
+        apply_market_filter(out, market)
+        apply_night_filter(out, night)
+        return out
+
+    run_daily_simulation(results, evaluate_for)
 
     # 7. 發送 Telegram
     print("發送 Telegram...")
