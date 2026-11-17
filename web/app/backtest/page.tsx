@@ -149,7 +149,7 @@ function daytradeColumn(result: BacktestResult, dt: { backtest: DaytradeBacktest
   }
   const cmd = dt?.commands.find(c => c.id === cmdId);
   const agentAlive = dt?.agentAt ? Date.now() - new Date(dt.agentAt).getTime() < 3 * 60_000 : false;
-  const note = !cmd ? "讀取中…" : cmd.status === "failed" ? `失敗：${cmd.message}` : cmd.status === "running" ? "你電腦上的當沖程式回測中…"
+  const note = !cmd ? "讀取中…" : cmd.status === "failed" ? `失敗：${cmd.message}` : cmd.status === "running" ? `你電腦上的當沖程式${cmd.message || "回測中…"}（第一次要抓幾個月資料，約 10–30 分鐘）`
     : agentAlive ? "排隊中，當沖程式馬上會開始" : "等你電腦上的當沖程式（請確認電腦開著、當沖程式在執行）";
   return { key: "daytrade", name: "⚡ 當沖", color: DAYTRADE_COLOR, side: null, note };
 }
