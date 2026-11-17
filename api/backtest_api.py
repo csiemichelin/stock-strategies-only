@@ -1,7 +1,8 @@
 """回測比較 API（網頁「回測比較」頁）
 
 GET  /api/backtest          目前進度 + 最近一次結果（所有裝置看到同一份）
-POST /api/backtest          {strategy_id, start_date, capital}：背景跑「策略 vs 抱 0050」
+POST /api/backtest          {strategy_ids[], include_daytrade, start_date, capital}：背景跑「多個策略 vs 抱 0050」；
+                            勾了當沖就另外請本機凱基程式回測同一段期間（結果在 /api/daytrade 的 backtest）
 POST /api/backtest/cancel   取消
 不會動到模擬交易帳戶。
 """
@@ -9,9 +10,11 @@ POST /api/backtest/cancel   取消
 from __future__ import annotations
 
 import os
+import re
 import threading
 import traceback
 from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -24,8 +27,13 @@ MIN_DAYS = 7
 MIN_QUOTA = 150  # FinMind 剩餘額度低於這個就先不要開始回測
 
 
+MAX_STRATEGIES = 3  # Render 免費方案 0.1 CPU / 512MB，一次最多比三個
+
+
 class BacktestIn(BaseModel):
-    strategy_id: str = Field("default", pattern=r"^[a-zA-Z0-9_-]{1,100}$")
+    strategy_id: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")  # 舊版前端
+    strategy_ids: list[str] = Field(default_factory=list, max_length=MAX_STRATEGIES)
+    include_daytrade: bool = False
     start_date: date
     capital: float = Field(10_000, ge=1_000, le=100_000_000)
 
@@ -71,8 +79,8 @@ def _save(result: dict) -> None:
 def _runner():
     """Render 上跟網頁選股一樣放到子行程，計算不拖慢其他頁面。"""
     def run(payload, _limit=None, *, progress=None, cancel=None):
-        return compare.run(payload["capital"], payload["start_date"], payload["strategy"],
-                           progress=progress, cancel=cancel)
+        return compare.run_many(payload["capital"], payload["start_date"], payload["strategies"],
+                                progress=progress, cancel=cancel)
 
     from api.cloud import run_in_subprocess
 
@@ -90,6 +98,7 @@ def _execute(payload: dict) -> None:
 
         result = to_plain(result)
         result["finished_at"] = datetime.now(TZ).isoformat(timespec="seconds")
+        result["request"] = payload.get("params")
         _save(result)
         job.update(status="completed", current=None, phase="完成")
     except Exception as exc:
@@ -110,13 +119,23 @@ def install(app: FastAPI) -> None:
             raise HTTPException(409, "已有回測在跑，請等它完成或先取消")
         if sim_api.job.busy:
             raise HTTPException(409, "模擬交易的歷史回放進行中，請稍後再試")
-        strategy = loader.get_strategy(payload.strategy_id)
-        if not strategy:
-            raise HTTPException(404, f"找不到策略 {payload.strategy_id}")
+        ids = list(dict.fromkeys(payload.strategy_ids or ([payload.strategy_id] if payload.strategy_id else [])))
+        if not ids and not payload.include_daytrade:
+            ids = ["default"]
+        if len(ids) > MAX_STRATEGIES:
+            raise HTTPException(400, f"一次最多比較 {MAX_STRATEGIES} 個策略")
+        strategies = []
+        for sid in ids:
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", sid):
+                raise HTTPException(422, f"策略代號格式錯誤：{sid}")
+            strategy = loader.get_strategy(sid)
+            if not strategy:
+                raise HTTPException(404, f"找不到策略 {sid}")
+            strategies.append(strategy)
         from api.cloud import finmind_usage
 
         usage = finmind_usage()
-        if usage and usage["remaining"] < MIN_QUOTA:
+        if strategies and usage and usage["remaining"] < MIN_QUOTA:
             raise HTTPException(429, f"FinMind 免費額度這個小時只剩 {usage['remaining']} 次（上限 {usage['limit']}），"
                                      "回測可能要用到幾百次，請約一小時後再試")
         today = datetime.now(TZ).date()
@@ -124,12 +143,21 @@ def install(app: FastAPI) -> None:
             raise HTTPException(400, f"回測期間至少要 {MIN_DAYS} 天")
         if payload.start_date < today - timedelta(days=MAX_DAYS + 5):
             raise HTTPException(400, "回測期間最長一年")
-        params = {"strategy_id": strategy["id"], "strategy_name": strategy.get("name", strategy["id"]),
+        daytrade_cmd = None
+        if payload.include_daytrade:
+            from api import daytrade_api
+
+            daytrade_cmd = daytrade_api.enqueue("backtest", {"start_date": payload.start_date.isoformat()})
+        names = [s.get("name", s["id"]) for s in strategies] + (["當沖"] if payload.include_daytrade else [])
+        params = {"strategy_id": ids[0] if ids else "daytrade", "strategy_name": "、".join(names),
+                  "strategy_ids": ids, "include_daytrade": payload.include_daytrade,
+                  "daytrade_command": daytrade_cmd["id"] if daytrade_cmd else None,
                   "start_date": payload.start_date.isoformat(), "capital": payload.capital}
         job.cancel.clear()
         job.update(status="running", phase="準備中", completed=0, total=None, current=None, error=None,
                    params=params, started_at=datetime.now(TZ).isoformat(timespec="seconds"))
-        data = {"capital": payload.capital, "start_date": payload.start_date.isoformat(), "strategy": strategy}
+        data = {"capital": payload.capital, "start_date": payload.start_date.isoformat(), "strategies": strategies,
+                "params": params}
         threading.Thread(target=_execute, args=(data,), name="backtest", daemon=True).start()
         return {"job": job.snapshot(), "result": last_result()}
 

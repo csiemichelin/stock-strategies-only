@@ -5,6 +5,9 @@ POST /api/daytrade/event      macro / preopen / entry / exit / halt / summary / 
 POST /api/daytrade/backtest   本機回測結果
 GET  /api/daytrade            網頁用：計畫、今天的事件、最近每日損益、回測、本機程式最後回報時間
 GET  /api/daytrade/macro      本機 08:30 查：台指期夜盤、台積電 ADR、那斯達克漲跌
+POST /api/daytrade/commands   網頁請本機程式做事：{type: screen|backtest, params}
+GET  /api/daytrade/commands/next      本機程式輪詢，領走最舊的待辦
+POST /api/daytrade/commands/{id}/done 本機回報完成／失敗
 全部走既有的 x-api-key 驗證。
 """
 
@@ -16,14 +19,14 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from stock_strategies import webstore
 
 TZ = timezone(timedelta(hours=8))
 _lock = threading.Lock()
-_heartbeat: dict = {"at": None, "mode": None, "note": None}
+_heartbeat: dict = {"at": None, "mode": None, "note": None, "agent_at": None}
 _macro_cache: dict = {"day": None, "value": None}
 LINE_EVENTS = {"plan", "macro", "preopen", "entry", "exit", "halt", "summary", "error"}
 
@@ -35,6 +38,49 @@ class PlanIn(BaseModel):
     stats: dict = {}
     params: dict = {}
     notes: list[str] = []
+
+
+class CommandIn(BaseModel):
+    type: str = Field(pattern=r"^(screen|backtest)$")
+    params: dict[str, Any] = {}
+
+
+class CommandDone(BaseModel):
+    ok: bool = True
+    message: str = ""
+
+
+COMMANDS_KEY = "daytrade_commands"
+STALE_MINUTES = 90  # 本機領走後太久沒回報 → 視為失敗，可以重新送
+
+
+def _commands() -> list[dict]:
+    return list(webstore.load(COMMANDS_KEY) or [])
+
+
+def _expire(cmds: list[dict]) -> bool:
+    changed = False
+    for c in cmds:
+        if c["status"] == "running" and c.get("started_at"):
+            started = datetime.fromisoformat(c["started_at"])
+            if _now() - started > timedelta(minutes=STALE_MINUTES):
+                c.update(status="failed", message="本機程式太久沒回報（可能被關掉），請重新送出", finished_at=_now().isoformat(timespec="seconds"))
+                changed = True
+    return changed
+
+
+def enqueue(type_: str, params: dict | None = None) -> dict:
+    """同類型已有待辦或執行中就沿用（例如重複按回測）。"""
+    with _lock:
+        cmds = _commands()
+        _expire(cmds)
+        for c in cmds:
+            if c["type"] == type_ and c["status"] in ("pending", "running") and c.get("params") == (params or {}):
+                return c
+        cmd = {"id": _now().strftime("%Y%m%d%H%M%S") + f"-{type_}", "type": type_, "params": params or {},
+               "status": "pending", "created_at": _now().isoformat(timespec="seconds"), "message": ""}
+        webstore.save(COMMANDS_KEY, (cmds + [cmd])[-20:])
+        return cmd
 
 
 class EventIn(BaseModel):
@@ -184,6 +230,36 @@ def install(app: FastAPI) -> None:
         webstore.save("daytrade_backtest", {**result, "received_at": _now().isoformat(timespec="seconds")})
         return {"ok": True}
 
+    @app.post("/api/daytrade/commands")
+    def post_command(cmd: CommandIn):
+        return enqueue(cmd.type, cmd.params)
+
+    @app.get("/api/daytrade/commands/next")
+    def next_command(mode: Optional[str] = None):
+        _heartbeat.update(agent_at=_now().isoformat(timespec="seconds"), mode=mode or _heartbeat["mode"])
+        with _lock:
+            cmds = _commands()
+            changed = _expire(cmds)
+            cmd = next((c for c in cmds if c["status"] == "pending"), None)
+            if cmd:
+                cmd.update(status="running", started_at=_now().isoformat(timespec="seconds"))
+                changed = True
+            if changed:
+                webstore.save(COMMANDS_KEY, cmds)
+        return {"command": cmd}
+
+    @app.post("/api/daytrade/commands/{cmd_id}/done")
+    def command_done(cmd_id: str, done: CommandDone):
+        with _lock:
+            cmds = _commands()
+            cmd = next((c for c in cmds if c["id"] == cmd_id), None)
+            if cmd is None:
+                raise HTTPException(404, "找不到這個指令")
+            cmd.update(status="done" if done.ok else "failed", message=done.message[:300],
+                       finished_at=_now().isoformat(timespec="seconds"))
+            webstore.save(COMMANDS_KEY, cmds)
+        return cmd
+
     @app.get("/api/daytrade/macro")
     def get_macro():
         return macro_snapshot()
@@ -200,4 +276,4 @@ def install(app: FastAPI) -> None:
 
         return {"plan": load("daytrade_plan"), "today": load(f"daytrade_day_{_today()}", {"date": _today(), "events": []}),
                 "history": load("daytrade_history", []), "backtest": load("daytrade_backtest"),
-                "heartbeat": dict(_heartbeat)}
+                "heartbeat": dict(_heartbeat), "commands": load(COMMANDS_KEY, [])[-10:]}
