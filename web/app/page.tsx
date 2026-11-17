@@ -78,7 +78,7 @@ export default function Dashboard() {
     <section className="card">
       <div className="mb-5 flex items-center gap-3"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent/10 font-mono text-xs text-accent">01</span><h2 className="font-medium">選擇策略，開始今日研究</h2></div>
       {loading ? <Skeleton rows={1} /> : !strategies.length ? <EmptyState title="先建立你的第一個策略"><Link href="/strategies/new" className="btn-primary mt-3">建立策略</Link></EmptyState> : <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-        <div><label htmlFor="strategy" className="label">本次使用策略</label><select id="strategy" className="input" value={picked} disabled={run.running} onChange={e => setPicked(e.target.value)}>{strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+        <div><label htmlFor="strategy" className="label">本次使用策略</label><select id="strategy" className="input" value={picked} disabled={run.running} onChange={e => setPicked(e.target.value)}>{strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select><p className="mt-2 text-xs text-muted">當沖策略不在這裡，請看 <Link className="text-blue-300 hover:underline" href="/daytrade">當沖</Link> 頁。</p>
           {selected && <div className="mt-3 space-y-2"><SourceBadge source={selected.source} /><p className="text-xs leading-6 text-muted">{selected.description}</p><Link className="text-xs text-blue-300 hover:underline" href={`/strategies/${selected.id}`}>查看與調整參數 →</Link></div>}
         </div><div className="space-y-3 lg:border-l lg:border-line lg:pl-6"><RunControl run={run} disabled={!picked} /><QuotaStatus need="每天第一次選股約需 300–500 次" /></div>
       </div>}
