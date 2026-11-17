@@ -36,7 +36,7 @@ export default function StrategiesPage() {
     {loading ? <Skeleton /> : <>
       <p className="text-xs text-muted">{filtered.length} 個策略</p>
       {!filtered.length && !error && <EmptyState title={items.length ? "沒有符合的策略" : "建立你的第一個策略"}>{items.length ? <button className="btn-ghost mt-3" onClick={() => { setQuery(""); setSource("all"); }}>清除篩選</button> : <Link href="/strategies/new" className="btn-primary mt-3">手動建立策略</Link>}</EmptyState>}
-      <div className="grid gap-4 md:grid-cols-2">{filtered.map(strategy => <article key={strategy.id} className="card flex flex-col transition hover:border-accent/30">
+      <div className="grid gap-4 md:grid-cols-2"><DaytradeCard />{filtered.map(strategy => <article key={strategy.id} className="card flex flex-col transition hover:border-accent/30">
         <div className="flex items-center justify-between gap-3"><SourceBadge source={strategy.source} /><span className="font-mono text-xs text-muted">{strategy.id}</span></div><h2 className="mt-4 text-lg font-semibold">{strategy.name}</h2><p className="mt-2 line-clamp-3 text-sm leading-6 text-muted">{strategy.description || "尚未新增策略說明"}</p>
         {strategy.error ? <div className="mt-4"><ErrorCard message={strategy.error} /></div> : <dl className="my-5 grid grid-cols-3 gap-4 rounded-lg bg-panel2/60 p-4">{[["EPS 門檻", strategy.params.eps_threshold], ["ROE 門檻", strategy.params.roe_threshold], ["BUY 分數", strategy.params.min_total_score_for_buy], ["停利", pct(strategy.params.target_return)], ["停損", pct(strategy.params.stop_loss)], ["持有天數", strategy.params.hold_days]].map(([label, value]) => <div key={String(label)}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 font-mono text-sm">{String(value ?? "—")}</dd></div>)}</dl>}
         <div className="mt-auto border-t border-line pt-4">
@@ -47,3 +47,12 @@ export default function StrategiesPage() {
   </div>;
 }
 function pct(value: number | boolean | undefined) { return typeof value === "number" ? `${Number((value * 100).toFixed(1))}%` : "—"; }
+function DaytradeCard() {
+  return <article className="card flex flex-col border-accent/30 transition hover:border-accent/50">
+    <div className="flex items-center justify-between gap-3"><span className="rounded-md bg-accent/10 px-2 py-0.5 text-xs text-blue-300">當沖・凱基 API</span><span className="font-mono text-xs text-muted">daytrade</span></div>
+    <h2 className="mt-4 text-lg font-semibold">高勝率動能延續與極短線套利</h2>
+    <p className="mt-2 text-sm leading-6 text-muted">盤後挑爆量強勢股 → 08:30 夜盤/ADR 濾網 → 08:59 試撮體檢 → 09:03–09:15 突破或回測均價進場，當天出場。由你電腦上的本機程式（凱基 API）每天自動執行，不在「今日訊號」選單裡。</p>
+    <dl className="my-5 grid grid-cols-3 gap-4 rounded-lg bg-panel2/60 p-4">{[["成交量", "≥ 1 萬張"], ["漲幅", "3.5–6.5%"], ["量 / 5 日均", "≥ 2 倍"], ["停利", "1%"], ["停損", "0.8%"], ["持有", "當天"]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 font-mono text-sm">{value}</dd></div>)}</dl>
+    <div className="mt-auto border-t border-line pt-4"><Link href="/daytrade" className="btn-ghost w-full">查看當沖名單與紀錄 →</Link></div>
+  </article>;
+}
