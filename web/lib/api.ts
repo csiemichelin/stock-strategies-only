@@ -91,7 +91,9 @@ export type BacktestJob = {
   params: { strategy_id: string; strategy_name: string; start_date: string; capital: number; strategy_ids?: string[]; include_daytrade?: boolean; daytrade_command?: string | null } | null;
 };
 export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null };
-export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null };
+export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null; score?: number; score_parts?: Record<string, number> };
+export type DaytradeReviewItem = { stock_id: string; name: string; score: number; recommended: boolean; outcome: "win" | "loss" | "flat" | "no_data"; entry?: number; exit?: number; exit_time?: string; ret_pct?: number; gap_pct?: number | null; max_up_pct?: number; max_down_pct?: number };
+export type DaytradeReview = { trade_date: string; data_date: string; items: DaytradeReviewItem[]; take_profit_pct: number; stop_loss_pct: number; stats: { count: number; wins: number; losses: number; hit_rate: number | null; recommended: number; recommended_hit_rate: number | null; avg_ret_pct: number | null } };
 export type DaytradePlan = { trade_date: string; data_date: string; candidates: DaytradeCandidate[]; stats: Record<string, number>; params: Record<string, number>; notes: string[]; received_at?: string };
 export type DaytradeEvent = { type: string; ts: string; symbol?: string | null; name?: string | null; price?: number | null; shares?: number | null; pnl?: number | null; ok?: boolean | null; mode?: string | null; reason: string; extra?: Record<string, unknown> };
 export type DaytradeDay = { date: string; trades: number; pnl: number; wins: number; mode?: string | null };
@@ -101,7 +103,7 @@ export type DaytradeBacktest = {
   trades?: { date: string; stock_id: string; mode: string; entry: number; exit?: number; shares: number; pnl?: number; entry_reason?: string; exit_reason?: string }[];
 };
 export type DaytradeCommand = { id: string; type: "screen" | "backtest"; params: Record<string, unknown>; status: "pending" | "running" | "done" | "failed"; created_at: string; started_at?: string; finished_at?: string; message: string };
-export type DaytradeResponse = { plan: DaytradePlan | null; today: { date: string; events: DaytradeEvent[] }; history: DaytradeDay[]; backtest: DaytradeBacktest | null; heartbeat: { at: string | null; mode: string | null; note: string | null; agent_at?: string | null }; commands?: DaytradeCommand[] };
+export type DaytradeResponse = { plan: DaytradePlan | null; today: { date: string; events: DaytradeEvent[] }; history: DaytradeDay[]; backtest: DaytradeBacktest | null; heartbeat: { at: string | null; mode: string | null; note: string | null; agent_at?: string | null }; commands?: DaytradeCommand[]; reviews?: DaytradeReview[] };
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
