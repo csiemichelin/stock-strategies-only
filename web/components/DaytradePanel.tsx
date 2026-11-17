@@ -68,14 +68,16 @@ export function DaytradePlanView({ data, error }: { data: DaytradeResponse | nul
     </div>
     {plan.candidates.length === 0 ? <p className="text-sm text-muted">沒有符合條件的標的（量 ≥ 1 萬張、金額 ≥ 5 億、漲 3.5–6.5%、收盤 ≥ 均價、量 ≥ 5 日均 2 倍、隔日沖券商 &lt; 10%），這天不做當沖。</p> :
       <div className="overflow-x-auto"><table className="w-full min-w-[640px] text-sm">
-        <thead className="text-left text-xs text-muted"><tr><th className="py-2">股票</th><th className="text-right">收盤</th><th className="text-right">漲幅</th><th className="text-right">成交張數</th><th className="text-right">量 / 5 日均</th><th className="text-right">金額</th><th className="text-right">隔日沖買超</th></tr></thead>
+        <thead className="text-left text-xs text-muted"><tr><th className="py-2">股票</th><th className="text-right">評分</th><th className="text-right">收盤</th><th className="text-right">漲幅</th><th className="text-right">成交張數</th><th className="text-right">量 / 5 日均</th><th className="text-right">金額</th><th className="text-right">隔日沖買超</th></tr></thead>
         <tbody>{plan.candidates.map(c => <tr key={c.stock_id} className="border-t border-line">
-          <td className="py-2">{c.stock_id} {c.name}</td><td className="text-right font-mono">{c.close}</td>
+          <td className="py-2">{c.stock_id} {c.name}</td>
+          <td className="text-right font-mono" title={c.score_parts ? Object.entries(c.score_parts).map(([k, v]) => `${k} ${v}`).join("、") : undefined}>{c.score == null ? "—" : `${c.score >= 60 ? "⭐ " : ""}${c.score}`}</td>
+          <td className="text-right font-mono">{c.close}</td>
           <td className="text-right font-mono text-rise">+{c.change_pct.toFixed(2)}%</td><td className="text-right font-mono">{Math.round(c.volume_lots).toLocaleString()}</td>
           <td className="text-right font-mono">{c.volume_ratio.toFixed(1)} 倍</td><td className="text-right font-mono">{(c.amount / 1e8).toFixed(1)} 億</td>
           <td className="text-right font-mono">{c.daytrader_share == null ? "—" : `${(c.daytrader_share * 100).toFixed(1)}%`}</td></tr>)}</tbody>
       </table></div>}
     {plan.notes?.length > 0 && <ul className="list-disc pl-5 text-xs text-muted">{plan.notes.map(n => <li key={n}>{n}</li>)}</ul>}
-    <p className="text-xs text-muted">隔天 08:30 看夜盤／ADR、08:59 看試撮，09:03–09:15 才決定進不進場；停損 0.8%、停利約 1%，當天出場。</p>
+    <p className="text-xs text-muted">評分 0–100（量能、收在高點、強於均價、漲幅、流動性、隔日沖少），⭐ ≥ 60 分算推薦；收盤後自動檢討命中率，見<Link className="text-blue-300 hover:underline" href="/daytrade">當沖頁</Link>。隔天 08:30 看夜盤／ADR、08:59 看試撮，09:03–09:15 才決定進不進場；停損 0.8%、停利約 1%，當天出場。</p>
   </section>;
 }
