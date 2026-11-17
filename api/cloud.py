@@ -455,7 +455,7 @@ def _install_runs(app: FastAPI, runs) -> None:
 
 
 def install(app: FastAPI, runs=None) -> None:
-    from api import backtest_api, sim_api
+    from api import backtest_api, daytrade_api, sim_api
 
     _install_response_cache(app)
     _install_api_key(app)
