@@ -94,10 +94,11 @@ export type BacktestJob = {
 export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null };
 export type LabFold = { start: string; end: string; ret_pct: number; bench_pct: number; excess_pct: number; config?: string };
 export type LabSide = { name: string; total_pct: number; cagr_pct: number; mdd_pct: number; vol_pct: number; sharpe: number; folds: LabFold[]; curve: [string, number][] };
-export type LabCandidate = LabSide & { id: string; desc: string; kind: "fixed" | "grid"; configs: number; current: string | null; excess_cagr_pct: number; t_stat: number; win_folds: number; verdict: "strong" | "tentative" | "none"; exposure_pct: number; trades_per_year: number; cost_pct_per_year: number };
+export type LabVersus = { excess_cagr_pct: number; t_stat: number; win_folds: number };
+export type LabCandidate = LabSide & LabVersus & { id: string; desc: string; kind: "fixed" | "grid"; configs: number; current: string | null; verdict: "strong" | "tentative" | "promising" | "none"; exposure_pct: number; trades_per_year: number; cost_pct_per_year: number; universe?: boolean; vs_universe?: LabVersus | null };
 export type LabReport = {
   generated_at: string; period: { start: string; end: string; days: number; years: number; data_start: string };
-  capital: number; fold_months: number; train_days: number; trials: number; benchmark: LabSide & { id: string }; candidates: LabCandidate[]; passed: string[];
+  capital: number; fold_months: number; train_days: number; trials: number; benchmark: LabSide & { id: string }; universe?: LabSide & { id: string; stocks: number; excess_cagr_pct: number }; candidates: LabCandidate[]; passed: string[]; promising?: string[];
   data: { stocks: number; companies: number; with_revenue: number; with_fundamentals: number; dividend_events: number; skipped: string[] }; notes: string[]; seconds: number;
 };
 export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null; score?: number; score_parts?: Record<string, number> };
