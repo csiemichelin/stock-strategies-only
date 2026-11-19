@@ -31,7 +31,7 @@ SLIP = 0.001             # 滑價測試：買賣各再讓 0.1%
 REPORT = "lab_pit_report"
 TRACK = "lab_track"      # 模擬帳戶從哪一天開始、LINE 通知到哪一次了
 ORDER = ("none", "tentative", "strong")
-CANDIDATES = [c for c in lab.CANDIDATES if c["id"] in ("revenue", "trend")]
+CANDIDATES = [c for c in lab.CANDIDATES if c["id"] in ("revenue", "combo", "trend")]
 
 
 def _log(msg: str) -> None:

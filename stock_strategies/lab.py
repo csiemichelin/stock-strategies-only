@@ -54,6 +54,8 @@ CANDIDATES = [
      "desc": "同上，但總分不看「歷史勝率」那一項（它是樣本內統計）"},
     {"id": "revenue", "name": "月營收動能", "kind": "grid", "universe": True,
      "desc": "每月營收公布後，買營收成長最強的幾檔，抱到下個月再換"},
+    {"id": "combo", "name": "營收動能＋趨勢", "kind": "grid", "universe": True,
+     "desc": "跟月營收動能一樣排名，但只買股價站在 120 日均線之上的"},
     {"id": "trend", "name": "趨勢動能", "kind": "grid", "universe": True,
      "desc": "每月第一個交易日收盤後，買過去漲最多、且站上均線的幾檔；大盤跌破半年線就全部空手"},
     {"id": "timing", "name": "0050 均線擇時", "kind": "grid", "universe": False,
@@ -61,6 +63,7 @@ CANDIDATES = [
 ]
 GRIDS = {
     "revenue": [("yoy", 5), ("yoy", 10), ("accel", 5), ("accel", 10)],
+    "combo": [("yoy", 5), ("yoy", 10), ("accel", 5), ("accel", 10)],
     "trend": [(60, 5), (60, 10), (120, 5), (120, 10), (250, 5), (250, 10)],
     "timing": [(120,), (200,), (250,)],
 }
@@ -528,6 +531,14 @@ def plan_revenue(data: Data, metric: str, top: int) -> dict:
     return plan
 
 
+def plan_combo(data: Data, metric: str, top: int) -> dict:
+    """營收動能＋趨勢：營收排名照舊，但只留股價站在 120 日均線之上的（營收好、股價卻在跌的不買）。"""
+    close = data.close[data.stocks]
+    above = close > close.rolling(120, min_periods=96).mean()
+    ranked = plan_revenue(data, metric, len(data.stocks))  # 不截斷的完整排名
+    return {d: [s for s in order if s in above.columns and bool(above.at[d, s])][:top] for d, order in ranked.items()}
+
+
 def plan_trend(data: Data, lookback: int, top: int) -> dict:
     close = data.close[data.stocks]
     mom = close / close.shift(lookback) - 1
@@ -559,13 +570,15 @@ def plan_universe(data: Data) -> dict:
     return plan
 
 
-PLANNERS = {"revenue": (plan_revenue, lambda cfg: cfg[1]), "trend": (plan_trend, lambda cfg: cfg[1]),
+PLANNERS = {"revenue": (plan_revenue, lambda cfg: cfg[1]), "combo": (plan_combo, lambda cfg: cfg[1]),
+            "trend": (plan_trend, lambda cfg: cfg[1]),
             "timing": (plan_timing, lambda cfg: 1)}
 
 
 def _label(cid: str, cfg: tuple) -> str:
-    if cid == "revenue":
-        return f"{'營收年增率' if cfg[0] == 'yoy' else '近3月÷近12月營收'}前 {cfg[1]} 檔"
+    if cid in ("revenue", "combo"):
+        return (f"{'營收年增率' if cfg[0] == 'yoy' else '近3月÷近12月營收'}前 {cfg[1]} 檔"
+                + ("＋站上 120 日線" if cid == "combo" else ""))
     if cid == "trend":
         return f"{cfg[0]} 日動能前 {cfg[1]} 檔"
     return f"{cfg[0]} 日均線"
