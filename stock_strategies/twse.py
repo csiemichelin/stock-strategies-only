@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,8 +26,12 @@ TZ = timezone(timedelta(hours=8))
 BASE = "https://www.twse.com.tw/rwd/zh/"
 MOPS = "https://mopsov.twse.com.tw/nas/t21/sii/"
 HEADERS = {"User-Agent": "Mozilla/5.0 (stock-strategies lab)"}
+OPENAPI = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"  # 最新一個月的上市公司月營收（備援）
 PAUSE = float(os.environ.get("TWSE_PAUSE", "3.2"))   # 同一個網站兩次請求的間隔（秒）
+MOPS_PAUSE = float(os.environ.get("MOPS_PAUSE", "15"))  # 公開資訊觀測站擋得比較嚴（連續抓三十幾次就會被擋），隔久一點
+MOPS_COOLDOWN = 900.0                                 # 被擋下來之後休息多久再試
 RETRY_WAIT = 30.0                                     # 失敗後第一次重試前等多久；之後每次加倍
+REUSE_MINUTES = 45.0                                  # 這麼久以內才抓過的（同一次執行裡）不用再抓一次
 COMMON = re.compile(r"^[1-9]\d{3}$")                  # 四碼、1～9 開頭：普通股（91 開頭是存託憑證，另外排除）
 EXTRA = {"0050"}                                      # 另外保留的 ETF（當比較基準）
 COLUMNS = ["date", "id", "open", "high", "low", "close", "volume", "value", "flag"]
@@ -66,12 +71,16 @@ def _write_json(name: str, value) -> None:
     tmp.replace(path)
 
 
+class NotFound(RuntimeError):
+    """網站說沒有這個檔案（不是被擋）。"""
+
+
 def _get(url: str, encoding: str = "utf-8", tries: int = 6) -> str:
     """抓一個網址（同一個網站固定間隔；失敗就等久一點再試）。"""
     host = url.split("/")[2]
     err = ""
     for attempt in range(tries):
-        wait = _last.get(host, 0.0) + PAUSE - time.monotonic()
+        wait = _last.get(host, 0.0) + (MOPS_PAUSE if "mops" in host else PAUSE) - time.monotonic()
         if wait > 0:
             time.sleep(wait)
         try:
@@ -79,6 +88,8 @@ def _get(url: str, encoding: str = "utf-8", tries: int = 6) -> str:
             _last[host] = time.monotonic()
             if r.status_code == 200 and r.content:
                 return r.content.decode(encoding, "replace")
+            if r.status_code == 404:
+                raise NotFound(f"{url} 不存在")
             err = f"HTTP {r.status_code}"
         except requests.RequestException as exc:
             _last[host] = time.monotonic()
@@ -134,8 +145,15 @@ def _months(start: str, end: str) -> list[str]:
 
 
 def _settled(fetched: str | None, after: str) -> bool:
-    """這份資料是不是在 after（YYYY-MM-DD）之後才抓的——是的話內容不會再變，不用重抓。"""
-    return bool(fetched) and fetched[:10] > after
+    """這份資料是不是在 after（YYYY-MM-DD）之後才抓的——是的話內容不會再變，不用重抓。剛剛才抓過的也不用。"""
+    if not fetched:
+        return False
+    if fetched[:10] > after:
+        return True
+    try:
+        return (_now() - datetime.fromisoformat(fetched)).total_seconds() < REUSE_MINUTES * 60
+    except (TypeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------- 交易日與加權指數
@@ -301,40 +319,97 @@ def parse_revenue(html: str) -> dict[str, float]:
     return out
 
 
-def revenue(start_month: str, end_month: str | None = None) -> dict[str, dict[str, float]]:
-    """全體上市公司月營收：{代號: {YYYY-MM: 當月營收（千元）}}；end_month 預設是上個月。"""
+def revenue_latest() -> dict[str, dict[str, float]]:
+    """證交所開放資料：最新一個月的上市公司月營收 {YYYY-MM: {代號: 當月營收（千元）}}。公開資訊觀測站抓不到時的備援。"""
+    rows = json.loads(_get(OPENAPI, tries=3))
+    out: dict[str, dict[str, float]] = {}
+    for r in rows if isinstance(rows, list) else []:
+        ym, sid, value = str(r.get("資料年月", "")).strip(), str(r.get("公司代號", "")).strip(), _num(r.get("營業收入-當月營收"))
+        if re.fullmatch(r"\d{4,5}", ym) and re.fullmatch(r"\d{4}", sid) and value is not None:
+            out.setdefault(f"{int(ym[:-2]) + 1911:04d}-{int(ym[-2:]):02d}", {})[sid] = value
+    return out
+
+
+def _revenue_month(month: str) -> dict[str, float]:
+    """公開資訊觀測站某個月的彙總表（國內公司＋第一上市的外國公司 KY）。被擋下來會丟 RuntimeError。"""
+    roc, m = int(month[:4]) - 1911, int(month[5:7])
+    rows: dict[str, float] = {}
+    for kind in (0, 1):
+        try:
+            rows.update(parse_revenue(_get(f"{MOPS}t21sc03_{roc}_{m}_{kind}.html", encoding="big5", tries=2)))
+        except NotFound:
+            pass  # 這個月還沒有這張表
+    return rows
+
+
+def revenue(start_month: str, end_month: str | None = None, patient: bool = False) -> dict[str, dict[str, float]]:
+    """全體上市公司月營收：{代號: {YYYY-MM: 當月營收（千元）}}；end_month 預設是上個月。
+    patient=True（第一次抓十年份時）：被擋下來就休息一陣子再接著抓；否則抓不到就先用已經有的。"""
     now = _now()
     end_month = end_month or (pd.Timestamp(now.strftime("%Y-%m-01")) - pd.Timedelta(days=1)).strftime("%Y-%m")
     store = _read_json("revenue.json", {"months": {}, "fetched": {}})
-    changed = 0
-    for month in _months(start_month + "-01", end_month + "-01"):
-        # 法定公布期限是次月 10 日；再多留幾天給晚申報的，之後就當作定案
-        final_after = (pd.Timestamp(month + "-01") + pd.offsets.MonthEnd(0) + pd.Timedelta(days=15)).strftime("%Y-%m-%d")
-        if _settled(store["fetched"].get(month), final_after):
+    # 法定公布期限是次月 10 日；再多留幾天給晚申報的，之後就當作定案
+    todo = [m for m in _months(start_month + "-01", end_month + "-01") if not _settled(
+        store["fetched"].get(m),
+        (pd.Timestamp(m + "-01") + pd.offsets.MonthEnd(0) + pd.Timedelta(days=15)).strftime("%Y-%m-%d"))]
+    if len(todo) > 3:
+        _log(f"要補 {len(todo)} 個月的月營收，約 {len(todo) * 2 * MOPS_PAUSE / 60:.0f} 分鐘")
+    done, cooldowns, i = 0, 0, 0
+    while i < len(todo):
+        month = todo[i]
+        try:
+            rows = _revenue_month(month)
+        except RuntimeError as exc:
+            cooldowns += 1
+            if not patient or cooldowns > 8:
+                _log(f"公開資訊觀測站暫時抓不到（{month}：{str(exc)[-90:]}），還有 {len(todo) - i} 個月下次再補")
+                break
+            _log(f"公開資訊觀測站暫時抓不到（{month}），休息 {MOPS_COOLDOWN / 60:.0f} 分鐘再接著抓（第 {cooldowns} 次）")
+            time.sleep(MOPS_COOLDOWN)
             continue
-        roc, m = int(month[:4]) - 1911, int(month[5:7])
-        rows: dict[str, float] = {}
-        for kind in (0, 1):  # 0 國內公司、1 第一上市的外國公司（KY）
-            try:
-                rows.update(parse_revenue(_get(f"{MOPS}t21sc03_{roc}_{m}_{kind}.html", encoding="big5", tries=4)))
-            except RuntimeError as exc:
-                _log(f"{month} 月營收（{'KY' if kind else '國內'}）抓不到：{exc}")
-        if rows or month not in store["months"]:
-            store["months"][month] = rows
         if rows:
-            store["fetched"][month] = now.isoformat(timespec="seconds")
-        changed += 1
-        if changed % 12 == 0:
+            store["months"][month] = rows
+            store["fetched"][month] = _now().isoformat(timespec="seconds")
+        else:
+            store["months"].setdefault(month, {})
+        done += 1
+        i += 1
+        if done % 6 == 0 or i == len(todo):
             _write_json("revenue.json", store)
-            _log(f"月營收 {month}（{len(rows)} 家）")
-    if changed:
-        _write_json("revenue.json", store)
+            if done % 12 == 0:
+                _log(f"月營收 {month}（{len(rows)} 家，{i}/{len(todo)}）")
+    if i < len(todo) and todo[-1] == end_month:  # 最新這個月沒抓到：用證交所開放資料補
+        try:
+            rows = revenue_latest().get(end_month)
+            if rows:
+                store["months"][end_month] = {**store["months"].get(end_month, {}), **rows}
+                _log(f"月營收 {end_month} 改用證交所開放資料（{len(rows)} 家）")
+        except Exception as exc:  # noqa: BLE001
+            _log(f"證交所開放資料也抓不到：{exc}")
+    _write_json("revenue.json", store)
     out: dict[str, dict[str, float]] = {}
     for month in sorted(store["months"]):
         if start_month <= month <= end_month:
             for sid, value in store["months"][month].items():
                 out.setdefault(sid, {})[month] = float(value)
     return out
+
+
+def _stored_revenue() -> dict[str, dict[str, float]]:
+    out: dict[str, dict[str, float]] = {}
+    for month, rows in _read_json("revenue.json", {"months": {}})["months"].items():
+        for sid, value in rows.items():
+            out.setdefault(sid, {})[month] = float(value)
+    return out
+
+
+def revenue_gaps(rev: dict[str, dict[str, float]], start_month: str, end_month: str, floor: int = 300) -> list[str]:
+    """start～end 之間，申報家數不到 floor 的月份（＝還沒抓齊）。"""
+    count: dict[str, int] = {}
+    for months in rev.values():
+        for m in months:
+            count[m] = count.get(m, 0) + 1
+    return [m for m in _months(start_month + "-01", end_month + "-01") if count.get(m, 0) < floor]
 
 
 # ---------------------------------------------------------------- 一次抓齊
@@ -347,12 +422,31 @@ def download(years: int = 10) -> dict:
     _log(f"交易日 {len(cal)} 天（{cal[0][0]}～{cal[-1][0]}）")
     ex = exrights(start)
     _log(f"除權息 {sum(len(v) for v in ex.values())} 筆、{len(ex)} 檔")
-    rev = revenue((pd.Timestamp(start) - pd.Timedelta(days=400)).strftime("%Y-%m"))
-    _log(f"月營收 {len(rev)} 家、{len({m for v in rev.values() for m in v})} 個月")
+    rev_start = (pd.Timestamp(start) - pd.Timedelta(days=400)).strftime("%Y-%m")
+
+    def slow_site():  # 月營收的網站要慢慢抓，跟行情同時進行
+        try:
+            revenue(rev_start, patient=True)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"月營收沒抓完：{exc}")
+
+    worker = threading.Thread(target=slow_site, daemon=True)
+    worker.start()
     q = load_quotes([d for d, _ in cal])
     _log(f"行情 {q['date'].nunique()} 天、{q['id'].nunique()} 檔、{len(q)} 列")
+    worker.join()
+    rev = {sid: v for sid, v in _stored_revenue().items()}
+    _log(f"月營收 {len(rev)} 家、{len({m for v in rev.values() for m in v})} 個月")
     return {"days": len(cal), "quote_days": int(q["date"].nunique()), "stocks": int(q["id"].nunique()),
             "exrights": sum(len(v) for v in ex.values()), "revenue_companies": len(rev)}
+
+
+def stamp() -> str:
+    """快取內容的標記（最後一個行情日＋有資料的月營收月數）：內容沒變，GitHub Actions 就不用另存一份快取。"""
+    files = sorted(_dir().glob("quotes_*.parquet"))
+    last = pd.read_parquet(files[-1], columns=["date"])["date"].max() if files else "none"
+    months = sum(1 for rows in _read_json("revenue.json", {"months": {}})["months"].values() if rows)
+    return f"{last}-r{months}"
 
 
 def main(argv: list[str] | None = None) -> int:

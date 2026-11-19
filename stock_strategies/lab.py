@@ -55,9 +55,9 @@ CANDIDATES = [
     {"id": "revenue", "name": "月營收動能", "kind": "grid", "universe": True,
      "desc": "每月營收公布後，買營收成長最強的幾檔，抱到下個月再換"},
     {"id": "trend", "name": "趨勢動能", "kind": "grid", "universe": True,
-     "desc": "每月底買過去漲最多、且站上均線的幾檔；大盤跌破半年線就全部空手"},
+     "desc": "每月第一個交易日收盤後，買過去漲最多、且站上均線的幾檔；大盤跌破半年線就全部空手"},
     {"id": "timing", "name": "0050 均線擇時", "kind": "grid", "universe": False,
-     "desc": "0050 站上長均線才持有，跌破就空手（每月底檢查一次）"},
+     "desc": "0050 站上長均線才持有，跌破就空手（每月第一個交易日檢查一次）"},
 ]
 GRIDS = {
     "revenue": [("yoy", 5), ("yoy", 10), ("accel", 5), ("accel", 10)],
@@ -127,20 +127,35 @@ def _fetch(fn, *args):
 # ---------------------------------------------------------------- 資料
 
 
-def adjust(px: pd.DataFrame, events: list[tuple[str, float]]) -> tuple[pd.DataFrame, int]:
-    """含息還原股價。events：[(除權息日, 參考價÷前一日收盤)]，除權息日之前的價格都乘上因子。
-    單日收盤變動超過 ±30%（一般漲跌停 10%、槓桿 ETF 20%）一定是分割或減資，也當成調整、不算報酬。"""
+SPLITS = (1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 10, 1 / 20)  # 常見的分割比例（一股變 2、3、4、5、10、20 股）
+
+
+def adjust(px: pd.DataFrame, events: list[tuple[str, float]], jump: float = 0.3,
+           neutral: set | None = None) -> tuple[pd.DataFrame, int]:
+    """含息還原股價。events：[(除權息日, 參考價÷前一日收盤)]，除權息日之前的價格都乘上因子
+    （除權息日當天沒成交的，算在之後第一個有成交的日子）。
+    單日收盤變動超過 ±jump 一定是分割或減資（一般漲跌停 10%、槓桿 ETF 20%），也當成調整、不算報酬；
+    剛好接近 1 股拆成幾股的比例時用整數比例還原，分割前後停牌那幾天的漲跌才不會被吃掉。
+    neutral：參考價被調整過、但查不到調整幅度的日子（例如減資恢復買賣），那一天不算報酬。"""
     px = px.sort_values("date").reset_index(drop=True)
     dates = px["date"].astype(str).str[:10].to_numpy()
     close = px["close"].to_numpy(dtype=float)
-    known = dict(events)
     factor = np.ones(len(px))
+    known = set()
+    for day, f in events:
+        i = int(np.searchsorted(dates, day))
+        if 0 < i < len(px) and f and f > 0:
+            factor[i] *= f
+            known.add(i)
     for i in range(1, len(px)):
-        f = known.get(dates[i])
-        if f is None and close[i - 1] > 0 and close[i] > 0 and not 0.7 < close[i] / close[i - 1] < 1.3:
-            f = close[i] / close[i - 1]
-        if f:
-            factor[i] = f
+        if i in known or not (close[i - 1] > 0 and close[i] > 0):
+            continue
+        ratio = close[i] / close[i - 1]
+        if not 1 - jump < ratio < 1 + jump:
+            split = min(SPLITS, key=lambda v: abs(ratio / v - 1))
+            factor[i] = split if abs(ratio / split - 1) < 0.1 else ratio
+        elif neutral and dates[i] in neutral:
+            factor[i] = ratio
     suffix = np.cumprod(factor[::-1])[::-1]   # suffix[i] = factor[i] × factor[i+1] × …
     cum = np.append(suffix[1:], 1.0)           # 第 i 天要乘上「之後」發生的所有調整
     out = px.copy()
@@ -256,6 +271,16 @@ class Data:
         self.stocks = [s for s in px if not s.startswith("00")]  # 00 開頭的是 ETF
         self.skipped: list[str] = []
         self.dividend_events = 0
+        self.ranked: dict = {}  # 當時名單（pit.py 才有）：{月底: [依近期成交金額排序的代號]}
+        self.top = 0            # 名單取前幾名
+
+    def eligible(self, day: str) -> set | None:
+        """day 當天可以挑的股票：最近一個月底排出來的名單。None 表示不限制（用的是現在的觀察清單）。"""
+        if not self.ranked:
+            return None
+        keys = sorted(self.ranked)
+        i = bisect.bisect_right(keys, day) - 1
+        return set(self.ranked[keys[i]][:self.top]) if i >= 0 else set()
 
 
 @contextmanager
@@ -356,22 +381,25 @@ def _result(dates: list, equity: list, exposure: list, trades: int, costs: float
 
 
 def simulate(data: Data, plan: dict, start: str, end: str, slots: int, initial: list | None = None,
-             capital: float = CAPITAL) -> dict:
+             capital: float = CAPITAL, slip: float = 0.0, sizes: dict | None = None) -> dict:
     """排名型策略的引擎。plan：{決策日: [目標股票]}，決策日收盤後決定、下一個交易日開盤執行：
-    不在名單裡的全部賣掉，新進名單的每檔買「總資產 ÷ slots」；留在名單裡的不動（少一點交易成本）。"""
+    不在名單裡的全部賣掉，新進名單的每檔買「總資產 ÷ slots」；留在名單裡的不動（少一點交易成本）。
+    slip：滑價，買的時候比開盤價貴這個比例、賣的時候便宜這個比例。
+    sizes：{決策日: 檔數}，那一次換股改用這個檔數（中途換參數時用）。
+    回傳的 positions／cash／pending 是最後一天收盤後的狀態（pending：已決定、下一個交易日開盤要換成的名單）。"""
     cash, pos, last = float(capital), {}, {}
-    pending = initial
+    pending = (initial, slots) if initial is not None else None
     dates, equity, exposure, trades, costs = [], [], [], 0, 0.0
     for day in data.days:
         if day < start or day > end:
             continue
         if pending is not None:
-            targets, pending = pending, None
+            (targets, n_slots), pending = pending, None
             for sid in [s for s in pos if s not in targets]:
                 price = data.o[sid].get(day)
                 if price is None or not price > 0:
                     continue  # 當天沒交易：留到下次換股再賣
-                proceeds, fee = sim.sell_proceeds(sid, price, pos.pop(sid))
+                proceeds, fee = sim.sell_proceeds(sid, price * (1 - slip), pos.pop(sid))
                 cash += proceeds
                 costs += fee
                 trades += 1
@@ -380,7 +408,8 @@ def simulate(data: Data, plan: dict, start: str, end: str, slots: int, initial: 
                 price = data.o.get(sid, {}).get(day)
                 if sid in pos or price is None or not price > 0:
                     continue
-                shares = int(min(cash, total / slots) // (price * (1 + sim.FEE_RATE)))
+                price *= 1 + slip
+                shares = int(min(cash, total / n_slots) // (price * (1 + sim.FEE_RATE)))
                 while shares > 0 and sim.buy_cost(price, shares)[0] > cash:
                     shares -= 1
                 if shares <= 0:
@@ -399,8 +428,11 @@ def simulate(data: Data, plan: dict, start: str, end: str, slots: int, initial: 
         equity.append(cash + held)
         exposure.append(held / (cash + held) if cash + held > 0 else 0.0)
         if day in plan:
-            pending = plan[day]
-    return _result(dates, equity, exposure, trades, costs, capital)
+            pending = (plan[day], (sizes or {}).get(day, slots))
+    out = _result(dates, equity, exposure, trades, costs, capital)
+    out.update(positions=dict(pos), cash=cash, prices={s: last.get(s, 0.0) for s in pos},
+               pending=list(pending[0]) if pending is not None else None)
+    return out
 
 
 def run_v32(data: Data, strategy: dict, start: str, end: str, capital: float = CAPITAL) -> dict:
@@ -456,13 +488,21 @@ def month_ends(days: list[str]) -> list[str]:
     return [d for i, d in enumerate(days[:-1]) if days[i + 1][:7] != d[:7]]
 
 
+def month_starts(days: list[str]) -> list[str]:
+    """每個月第一個交易日。月底那天當下並不知道「這是這個月最後一個交易日」（隔天可能還開盤），
+    要等下個月第一個交易日出現才確定——所以每月換股的策略在這一天收盤後決定，實際上才做得到。"""
+    return [d for i, d in enumerate(days) if i and days[i - 1][:7] != d[:7]]
+
+
 def mid_months(days: list[str]) -> list[str]:
-    """每個月第一個「11 日以後」的交易日（月營收法定 10 日前公布）。"""
+    """月營收到齊的那一天：法定期限是每月 10 日、遇假日順延到下一個上班日（當天半夜前都還能申報），
+    所以用「10 日以後第一個交易日」的再下一個交易日，收盤後決定。"""
     out, seen = [], set()
-    for d in days:
-        if d[8:10] >= "11" and d[:7] not in seen:
+    for i, d in enumerate(days[:-1]):
+        if d[8:10] >= "10" and d[:7] not in seen:
             seen.add(d[:7])
-            out.append(d)
+            if i and days[i + 1][:7] == d[:7]:  # i == 0：資料從月中才開始，看不出 10 日那天是哪一天
+                out.append(days[i + 1])
     return out
 
 
@@ -470,8 +510,10 @@ def plan_revenue(data: Data, metric: str, top: int) -> dict:
     plan = {}
     for d in mid_months(data.days):
         fresh = (pd.Timestamp(d) - pd.Timedelta(days=45)).strftime("%Y-%m-%d")
-        scores = {}
+        allowed, scores = data.eligible(d), {}
         for sid, r in data.revenue.items():
+            if allowed is not None and sid not in allowed:
+                continue
             i = bisect.bisect_right(r["avail"], d) - 1
             if i < 0 or r["avail"][i] < fresh or d not in data.c.get(sid, {}):
                 continue
@@ -492,24 +534,29 @@ def plan_trend(data: Data, lookback: int, top: int) -> dict:
     ok = (close > close.rolling(lookback, min_periods=int(lookback * 0.8)).mean()) & (mom > 0)
     bull = data.index > data.index.rolling(120).mean()
     plan = {}
-    for d in month_ends(data.days):
+    for d in month_starts(data.days):
         if not bool(bull.get(d, False)):
             plan[d] = []
             continue
+        allowed = data.eligible(d)
         row = mom.loc[d][ok.loc[d]].dropna().sort_values(ascending=False)
-        plan[d] = [s for s in row.index if d in data.c[s]][:top]
+        plan[d] = [s for s in row.index if d in data.c[s] and (allowed is None or s in allowed)][:top]
     return plan
 
 
 def plan_timing(data: Data, window: int) -> dict:
     close = data.close[BENCH]
     ma = close.rolling(window).mean()
-    return {d: ([BENCH] if close[d] > ma[d] else []) for d in month_ends(data.days) if ma[d] == ma[d]}
+    return {d: ([BENCH] if close[d] > ma[d] else []) for d in month_starts(data.days) if ma[d] == ma[d]}
 
 
 def plan_universe(data: Data) -> dict:
-    """名單偏誤的對照組：名單裡的個股全部等權重買進、一直抱著（新掛牌的在下個月底補進來）。"""
-    return {d: [s for s in data.stocks if d in data.c[s]] for d in month_ends(data.days)}
+    """對照組：名單裡的個股全部等權重買進抱著（新掛牌的在下個月初補進來；用當時名單時，每個月初跟著名單換）。"""
+    plan = {}
+    for d in month_starts(data.days):
+        allowed = data.eligible(d)
+        plan[d] = [s for s in data.stocks if d in data.c[s] and (allowed is None or s in allowed)]
+    return plan
 
 
 PLANNERS = {"revenue": (plan_revenue, lambda cfg: cfg[1]), "trend": (plan_trend, lambda cfg: cfg[1]),
@@ -630,7 +677,7 @@ def _notes(data: Data, bench_cagr: float, universe_cagr: float) -> list[str]:
         + (f"，多出來的 {gap} 個百分點是事後挑名單的虛胖，不是選股能力。" if gap > 0 else "。")
         + "所以選股型策略要同時贏過 0050 和這個對照才算「有跡象」，而且要換成當時的名單重驗之後才能算證據。",
         "訊號當天收盤後產生、隔天開盤價成交；手續費 0.1425%（未打折）與證交稅都有扣，沒算滑價。",
-        "基本面只用當時已公布的年報（每年 4/1 起才用前一年）；月營收在法定公布日（次月 10 日）隔天才使用。",
+        "基本面只用當時已公布的年報（每年 4/1 起才用前一年）；月營收等法定期限（次月 10 日，遇假日順延）過後的下一個交易日才使用。",
         (f"股價已還原除權息與分割（共 {data.dividend_events} 筆除權息）。" if data.dividend_events
          else "這次抓不到除權息資料，股價沒有含息還原：0050 與各策略的報酬都少算了配息。"),
     ]
@@ -655,8 +702,8 @@ def run(data: Data | None = None, years: int = YEARS, save: bool = True, eval_fl
     end = days[-1]
     b_ret = simulate(data, {}, grid_start, end, 1, initial=[BENCH])["ret"].reindex(oos).fillna(0.0)
     held = [s for s in data.stocks if grid_start in data.c[s]]
-    u_ret = simulate(data, plan_universe(data), grid_start, end, max(1, len(data.stocks)),
-                     initial=held)["ret"].reindex(oos).fillna(0.0)
+    u_ret = simulate(data, plan_universe(data), grid_start, end, max(1, len(data.stocks)), initial=held,
+                     capital=CAPITAL * 100)["ret"].reindex(oos).fillna(0.0)  # 一檔只佔一點點：本金放大免得零股進位吃虧
     default = loader.get_strategy("default") or {"id": "default", "name": "預設策略", "params": {}}
     out = []
     for cand in CANDIDATES:
