@@ -92,6 +92,14 @@ export type BacktestJob = {
   params: { strategy_id: string; strategy_name: string; start_date: string; capital: number; strategy_ids?: string[]; include_daytrade?: boolean; daytrade_command?: string | null; quota_note?: string | null } | null;
 };
 export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null };
+export type LabFold = { start: string; end: string; ret_pct: number; bench_pct: number; excess_pct: number; config?: string };
+export type LabSide = { name: string; total_pct: number; cagr_pct: number; mdd_pct: number; vol_pct: number; sharpe: number; folds: LabFold[]; curve: [string, number][] };
+export type LabCandidate = LabSide & { id: string; desc: string; kind: "fixed" | "grid"; configs: number; current: string | null; excess_cagr_pct: number; t_stat: number; win_folds: number; verdict: "strong" | "tentative" | "none"; exposure_pct: number; trades_per_year: number; cost_pct_per_year: number };
+export type LabReport = {
+  generated_at: string; period: { start: string; end: string; days: number; years: number; data_start: string };
+  capital: number; fold_months: number; train_days: number; trials: number; benchmark: LabSide & { id: string }; candidates: LabCandidate[]; passed: string[];
+  data: { stocks: number; companies: number; with_revenue: number; with_fundamentals: number; dividend_events: number; skipped: string[] }; notes: string[]; seconds: number;
+};
 export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null; score?: number; score_parts?: Record<string, number> };
 export type DaytradeReviewItem = { stock_id: string; name: string; score: number; recommended: boolean; outcome: "win" | "loss" | "flat" | "no_data"; entry?: number; exit?: number; exit_time?: string; ret_pct?: number; gap_pct?: number | null; max_up_pct?: number; max_down_pct?: number };
 export type DaytradeReview = { trade_date: string; data_date: string; items: DaytradeReviewItem[]; take_profit_pct: number; stop_loss_pct: number; stats: { count: number; wins: number; losses: number; hit_rate: number | null; recommended: number; recommended_hit_rate: number | null; avg_ret_pct: number | null } };
@@ -158,6 +166,7 @@ export const api = {
   stopSim: (slot?: string) => jfetch<SimResponse>("/api/sim/stop", slot == null ? { method: "POST" } : { method: "POST", body: JSON.stringify({ slot }) }),
   removeSim: (slot: string) => jfetch<SimResponse>("/api/sim/remove", { method: "POST", body: JSON.stringify({ slot }) }),
   getBacktest: (signal?: AbortSignal) => jfetch<BacktestResponse>("/api/backtest", { signal }),
+  getLab: (signal?: AbortSignal) => jfetch<{ report: LabReport | null }>("/api/lab", { signal }),
   startBacktest: (strategy_ids: string[], include_daytrade: boolean, start_date: string, capital: number, recompute = false) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_ids, include_daytrade, start_date, capital, recompute }) }),
   cancelBacktest: () => jfetch<BacktestResponse>("/api/backtest/cancel", { method: "POST" }),
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
