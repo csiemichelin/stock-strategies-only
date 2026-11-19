@@ -130,6 +130,21 @@ def main():
 
     run_daily_simulation(results, evaluate_for)
 
+    # 6c. 共用資料（省 FinMind 額度）：基本面快照寫回給網頁用；最近在網頁回測過的策略補上最新交易日，
+    #     網頁回測就只要讀紀錄、不用再抓資料
+    try:
+        from stock_strategies import fundstore
+        from stock_strategies.sim import extend_recent_logs
+
+        from stock_strategies import loader
+
+        fundstore.flush()
+        default = loader.get_strategy("default") or {"id": "default", "name": "預設策略"}
+        for line in extend_recent_logs(seed=[default]):  # 預設策略固定維護近一年，網頁第一次回測也不用抓資料
+            print(f"[回測紀錄] {line}")
+    except Exception as e:
+        print(f"⚠️ 回測紀錄更新失敗（不影響今日訊號）: {e}", file=sys.stderr)
+
     # 7. 發送 Telegram
     print("發送 Telegram...")
     for msg in format_messages(results, watchlist, market=market, night_note=night_note):
