@@ -386,11 +386,37 @@ def _remember_run(strategy: dict, result: dict) -> None:
 _usage_cache: dict = {"at": 0.0, "value": None}
 
 
-def finmind_usage() -> dict | None:
+def quota_waiter(min_left: int = 15, poll: int = 60):
+    """給回放／回測用：FinMind 剩不到 min_left 次（或剛碰到額度用完）就暫停，等額度恢復自動繼續。"""
+    def wait(report, cancel, force: bool = False):
+        from stock_strategies import cache
+
+        while True:
+            if cancel is not None and cancel.is_set():
+                return
+            usage = finmind_usage(fresh=force)
+            blocked = cache._quota_block_until - time.monotonic()
+            if blocked <= 0 and (usage is None or usage["remaining"] >= min_left):
+                return  # 查不到用量就不擋，交給 FinMind 本身的額度錯誤處理
+            force = False
+            left = usage["remaining"] if usage else 0
+            from datetime import datetime, timedelta, timezone
+
+            mins = 60 - datetime.now(timezone(timedelta(hours=8))).minute
+            report(phase=f"FinMind 額度本小時剩 {left} 次，暫停等下一小時（約 {mins} 分鐘後自動繼續，可關掉頁面）")
+            for _ in range(poll):
+                if cancel is not None and cancel.is_set():
+                    return
+                time.sleep(1)
+
+    return wait
+
+
+def finmind_usage(fresh: bool = False) -> dict | None:
     """FinMind 本小時已用次數／上限（官方 user_info API，這個查詢本身不算額度）；查不到回 None。"""
     import requests
 
-    if time.monotonic() - _usage_cache["at"] < 60:
+    if not fresh and time.monotonic() - _usage_cache["at"] < 60:
         return _usage_cache["value"]
     value = None
     token = os.environ.get("FINMIND_TOKEN")

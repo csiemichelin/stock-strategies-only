@@ -76,6 +76,9 @@ def _response(fresh: bool = False) -> dict:
 
 
 def _run_replays(capital: float, start: str, todo: list[tuple[str, dict]]):
+    from api.cloud import quota_waiter
+
+    sim.QUOTA_WAITER = quota_waiter()
     try:
         for i, (slot, strategy) in enumerate(todo, 1):
             label = f"[{i}/{len(todo)}] {strategy.get('name', strategy['id'])}"

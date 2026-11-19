@@ -80,6 +80,10 @@ def _save(result: dict) -> None:
 def _runner():
     """Render 上跟網頁選股一樣放到子行程，計算不拖慢其他頁面。"""
     def run(payload, _limit=None, *, progress=None, cancel=None):
+        from api.cloud import quota_waiter
+        from stock_strategies import sim
+
+        sim.QUOTA_WAITER = quota_waiter()  # 額度不夠就等下一小時自動繼續，不直接失敗
         return compare.run_many(payload["capital"], payload["start_date"], payload["strategies"],
                                 progress=progress, cancel=cancel)
 
@@ -136,6 +140,7 @@ def install(app: FastAPI) -> None:
         from api.cloud import finmind_usage
 
         usage = finmind_usage()
+        quota_note = None
         if strategies and usage:
             from stock_strategies import loader as _loader, sim as _sim
 
@@ -146,9 +151,8 @@ def install(app: FastAPI) -> None:
                 print(f"[backtest] estimate failed: {exc}")
                 need = MIN_QUOTA
             if usage["remaining"] < need + QUOTA_MARGIN:
-                raise HTTPException(429, f"這次回測大約要用 {need} 次 FinMind（快取裡還沒有的資料），"
-                                         f"這個小時只剩 {usage['remaining']} 次（上限 {usage['limit']}），"
-                                         "請約一小時後再試")
+                quota_note = (f"這次大約要用 {need} 次 FinMind，這個小時只剩 {usage['remaining']} 次："
+                              "會先用完本小時的額度，再自動等下一小時繼續（可以關掉頁面）")
         today = datetime.now(TZ).date()
         if payload.start_date > today - timedelta(days=MIN_DAYS):
             raise HTTPException(400, f"回測期間至少要 {MIN_DAYS} 天")
@@ -160,7 +164,7 @@ def install(app: FastAPI) -> None:
 
             daytrade_cmd = daytrade_api.enqueue("backtest", {"start_date": payload.start_date.isoformat()})
         names = [s.get("name", s["id"]) for s in strategies] + (["當沖"] if payload.include_daytrade else [])
-        params = {"strategy_id": ids[0] if ids else "daytrade", "strategy_name": "、".join(names),
+        params = {"strategy_id": ids[0] if ids else "daytrade", "strategy_name": "、".join(names), "quota_note": quota_note,
                   "strategy_ids": ids, "include_daytrade": payload.include_daytrade,
                   "daytrade_command": daytrade_cmd["id"] if daytrade_cmd else None,
                   "start_date": payload.start_date.isoformat(), "capital": payload.capital}
