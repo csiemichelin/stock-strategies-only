@@ -24,7 +24,8 @@ from stock_strategies import compare, loader, webstore
 TZ = timezone(timedelta(hours=8))
 MAX_DAYS = 365
 MIN_DAYS = 7
-MIN_QUOTA = 150  # FinMind 剩餘額度低於這個就先不要開始回測
+MIN_QUOTA = 150  # 估不出需求時的保守值
+QUOTA_MARGIN = 20  # 估計值之外多留一點（大盤、偶發重試）
 
 
 MAX_STRATEGIES = 3  # Render 免費方案 0.1 CPU / 512MB，一次最多比三個
@@ -135,9 +136,19 @@ def install(app: FastAPI) -> None:
         from api.cloud import finmind_usage
 
         usage = finmind_usage()
-        if strategies and usage and usage["remaining"] < MIN_QUOTA:
-            raise HTTPException(429, f"FinMind 免費額度這個小時只剩 {usage['remaining']} 次（上限 {usage['limit']}），"
-                                     "回測可能要用到幾百次，請約一小時後再試")
+        if strategies and usage:
+            from stock_strategies import loader as _loader, sim as _sim
+
+            years = max(int(_loader.merge_params(s)["backtest_years"]) for s in strategies) + 1
+            try:
+                need = _sim.estimate_finmind_calls(years)["total"]
+            except Exception as exc:  # noqa: BLE001 估不出來就用保守值
+                print(f"[backtest] estimate failed: {exc}")
+                need = MIN_QUOTA
+            if usage["remaining"] < need + QUOTA_MARGIN:
+                raise HTTPException(429, f"這次回測大約要用 {need} 次 FinMind（快取裡還沒有的資料），"
+                                         f"這個小時只剩 {usage['remaining']} 次（上限 {usage['limit']}），"
+                                         "請約一小時後再試")
         today = datetime.now(TZ).date()
         if payload.start_date > today - timedelta(days=MIN_DAYS):
             raise HTTPException(400, f"回測期間至少要 {MIN_DAYS} 天")
