@@ -241,7 +241,8 @@ class Data:
         self.funds = funds or {}
         self.o = {s: dict(zip(df["date"], df["open"].astype(float))) for s, df in px.items()}
         self.c = {s: dict(zip(df["date"], df["close"].astype(float))) for s, df in px.items()}
-        self.close = pd.DataFrame({s: pd.Series(self.c[s]) for s in px}).reindex(self.days).ffill()
+        close = pd.DataFrame({s: pd.Series(self.c[s]) for s in px}).reindex(self.days)
+        self.close = close.where(close > 0).ffill()  # 沒成交的日子（0 或缺值）沿用前一天的收盤
         self.stocks = [s for s in px if not s.startswith("00")]  # 00 開頭的是 ETF
         self.skipped: list[str] = []
         self.dividend_events = 0
@@ -294,7 +295,7 @@ def load_data(years: int = YEARS, watch: list[dict] | None = None) -> Data:
                 revenue[sid] = r
         except Exception as exc:  # noqa: BLE001
             _log(f"{sid} 月營收抓不到：{exc}")
-    _log(f"月營收：{len(revenue)}/{len(stocks)} 檔")
+    _log(f"股價 {len(px)} 檔（略過 {len(skipped)} 檔）、除權息 {events} 筆、月營收 {len(revenue)}/{len(stocks)} 檔")
     data = Data(px, index, names, revenue, _fund_histories(stocks))
     data.skipped, data.dividend_events = skipped, events
     return data
