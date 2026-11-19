@@ -376,6 +376,19 @@ def _names(items: list[dict]) -> str:
     return "、".join(f"{x['id']} {x['name']}" for x in items) or "無"
 
 
+def _verdict_line(c: dict) -> str:
+    """一句話講這個策略驗證得怎麼樣；沒通過的要講清楚為什麼（數字比 0050 高不等於有證據）。"""
+    n, v = len(c["folds"]), c["vs_universe"]
+    head = f"・{c['name']}：{VERDICT_TEXT[c['verdict']]}（年化 {c['cagr_pct']}%"
+    if c["verdict"] != "none":
+        return (f"{head}，每年贏 0050 {c['excess_cagr_pct']} 個百分點、贏當時名單 {v['excess_cagr_pct']}；"
+                f"{n} 段贏 {c['win_folds']} 段、t 值 {c['t_stat']}）")
+    if c["excess_cagr_pct"] > 0:
+        return (f"{head}、比 0050 多 {c['excess_cagr_pct']} 個百分點，但不穩定：{n} 段只贏 {c['win_folds']} 段、"
+                f"t 值 {c['t_stat']}（要 2 以上）、最大回撤 {c['mdd_pct']}%）")
+    return f"{head}，每年輸 0050 {abs(c['excess_cagr_pct'])} 個百分點）"
+
+
 def line_message(report: dict, state: dict, v32_excess: float | None = None) -> tuple[str | None, dict]:
     """要不要多推一則「策略實驗室」的 LINE、內容是什麼。回傳（訊息或 None, 更新後的通知紀錄）。
     會推的時機：第一次、通過驗證的策略今天收盤後決定換股、每週最後一個交易日（週五）的摘要。
@@ -402,14 +415,12 @@ def line_message(report: dict, state: dict, v32_excess: float | None = None) -> 
     lines = ["🔬 策略實驗室" + ("｜下個交易日開盤換股" if ahead else "｜換股通知" if changes
                             else "｜每週摘要" if weekly and not first else ""),
              f"用當時的名單重驗（樣本外 {report['period']['years']} 年，同期抱 0050 年化 {b['cagr_pct']}%）："]
-    for c in report["candidates"]:
-        v = c["vs_universe"]
-        lines.append(f"・{c['name']}：{VERDICT_TEXT[c['verdict']]}（年化 {c['cagr_pct']}%，每年比 0050 {c['excess_cagr_pct']:+}、"
-                     f"比當時名單 {v['excess_cagr_pct']:+} 個百分點）")
+    lines.extend(_verdict_line(c) for c in report["candidates"])
     if v32_excess is not None:
-        lines.append(f"・V3.2 現行策略（每日選股）：沒有足夠證據（每年比 0050 {v32_excess:+} 個百分點）")
+        lines.append("・V3.2 現行策略（每日選股用的）：沒有足夠證據（每年"
+                     + (f"輸 0050 {abs(v32_excess)}" if v32_excess < 0 else f"贏 0050 {v32_excess}") + " 個百分點）")
     if not passed:
-        lines.append("目前沒有任何策略有足夠的樣本外證據贏過抱 0050。")
+        lines.append("→ 目前沒有任何策略有足夠的樣本外證據贏過抱 0050。")
     for c in passed or report["candidates"]:
         a = accounts.get(c["id"])
         if not a:
