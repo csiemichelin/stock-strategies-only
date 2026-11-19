@@ -88,7 +88,7 @@ export type BacktestResult = {
 export type BacktestJob = {
   status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null;
   current: string | null; error: string | null; started_at: string | null;
-  params: { strategy_id: string; strategy_name: string; start_date: string; capital: number; strategy_ids?: string[]; include_daytrade?: boolean; daytrade_command?: string | null } | null;
+  params: { strategy_id: string; strategy_name: string; start_date: string; capital: number; strategy_ids?: string[]; include_daytrade?: boolean; daytrade_command?: string | null; quota_note?: string | null } | null;
 };
 export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null };
 export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null; score?: number; score_parts?: Record<string, number> };
