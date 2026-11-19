@@ -46,6 +46,9 @@ def screen(strategy, limit=None, *, progress=None, cancel=None, delay=0.4):
         if index + 1 < total and cancel.wait(delay):
             break
 
+    from stock_strategies import fundstore
+
+    fundstore.flush()  # 這次新抓到的基本面寫回共用快照（每日排程、回測都直接用，不再各抓一次）
     downgraded = apply_market_filter(results, market) if market_enabled else 0
     order = {"BUY": 0, "WATCH": 1, "SKIP": 2, "ERROR": 3}
     results.sort(key=lambda row: (order.get(row.get("action"), 4), -(row.get("signal_score") or 0)))
