@@ -10,7 +10,11 @@
   4. 結論規則寫死：樣本外年化報酬贏 0050、過半的區段都贏、月超額報酬 t 值 >= 2 才算「初步有證據」，
      t >= 3 才算「證據強」；否則就是「沒有足夠證據」。
 
-已知還沒解決的偏誤（報告裡會寫出來）：觀察清單是「現在」的名單（倖存者偏誤，結果偏樂觀）；
+  5. 名單偏誤的對照組：觀察清單是「現在」的市值前 100 大，等於事後挑贏家，從裡面選股的策略數字會虛胖。
+     所以另外算「同一份名單等權重買進持有」當對照：選股型策略要同時贏 0050 和這個對照才算「有跡象」，
+     而且在換成「當時的名單」重新驗證之前，不會被標成「有證據」。
+
+已知還沒解決的偏誤（報告裡會寫出來）：名單偏誤只能用上面的對照組估計、沒辦法完全排除；
 用開盤價成交、沒算滑價。
 
 用法：python -m stock_strategies.lab [--if-due 25] [--years 10]
@@ -24,6 +28,7 @@ import math
 import os
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -43,15 +48,15 @@ REPORT = "lab_report"
 FUND_HISTORY = "fund_history"
 
 CANDIDATES = [
-    {"id": "v32", "name": "V3.2 現行策略", "kind": "fixed",
+    {"id": "v32", "name": "V3.2 現行策略", "kind": "fixed", "universe": True,
      "desc": "基本面＋技術＋歷史勝率評分，+10%／−8%、最長抱 20 天，大盤跌破月線不買"},
-    {"id": "v32_nobt", "name": "V3.2 拿掉歷史勝率", "kind": "fixed",
+    {"id": "v32_nobt", "name": "V3.2 拿掉歷史勝率", "kind": "fixed", "universe": True,
      "desc": "同上，但總分不看「歷史勝率」那一項（它是樣本內統計）"},
-    {"id": "revenue", "name": "月營收動能", "kind": "grid",
+    {"id": "revenue", "name": "月營收動能", "kind": "grid", "universe": True,
      "desc": "每月營收公布後，買營收成長最強的幾檔，抱到下個月再換"},
-    {"id": "trend", "name": "趨勢動能", "kind": "grid",
+    {"id": "trend", "name": "趨勢動能", "kind": "grid", "universe": True,
      "desc": "每月底買過去漲最多、且站上均線的幾檔；大盤跌破半年線就全部空手"},
-    {"id": "timing", "name": "0050 均線擇時", "kind": "grid",
+    {"id": "timing", "name": "0050 均線擇時", "kind": "grid", "universe": False,
      "desc": "0050 站上長均線才持有，跌破就空手（每月底檢查一次）"},
 ]
 GRIDS = {
@@ -85,32 +90,37 @@ def _quota_left() -> int | None:
         return None
 
 
-def _wait_next_hour(reason: str) -> None:
+def _wait_for_quota(reason: str, need: int = 120) -> None:
+    """等 FinMind 額度恢復。額度是「最近一小時」滾動計算、不是整點歸零，所以每 5 分鐘看一次，
+    有 need 次可用就繼續；最多等 75 分鐘。"""
     from . import cache
 
-    now = datetime.now(TZ)
-    wait = (60 - now.minute) * 60 - now.second + 120
-    _log(f"{reason}，等 {wait // 60} 分鐘到下一個小時再繼續")
-    time.sleep(wait)
+    _log(f"{reason}，暫停等額度恢復（每 5 分鐘檢查一次，最多 75 分鐘）")
+    for n in range(15):
+        time.sleep(300)
+        left = _quota_left()
+        if left is None or left >= need:
+            _log(f"額度恢復了（剩 {left} 次），等了 {(n + 1) * 5} 分鐘")
+            break
     cache._quota_block_until = 0.0
 
 
 def _fetch(fn, *args):
-    """抓一筆 FinMind 資料；額度快用完就等下一個小時（這個工作不急，寧可等也不要缺資料）。"""
+    """抓一筆 FinMind 資料；額度快用完就等它恢復（這個工作不急，寧可等也不要缺資料）。"""
     from .cache import FinMindRateLimitError
 
     for attempt in range(4):
         if _calls["n"] % 20 == 0:
             left = _quota_left()
             if left is not None and left < 50:
-                _wait_next_hour(f"FinMind 額度這個小時只剩 {left} 次")
+                _wait_for_quota(f"FinMind 額度只剩 {left} 次")
         _calls["n"] += 1
         try:
             return fn(*args)
         except FinMindRateLimitError:
             if attempt == 3:
                 raise
-            _wait_next_hour("FinMind 額度用完")
+            _wait_for_quota("FinMind 額度用完")
     return None
 
 
@@ -248,7 +258,37 @@ class Data:
         self.dividend_events = 0
 
 
-def load_data(years: int = YEARS, watch: list[dict] | None = None) -> Data:
+@contextmanager
+def _reuse_recent(hours: float):
+    """這段期間內，快取裡「hours 小時內抓過」的資料一律直接用——實驗室看的是好幾年的結果，不需要當天最新的資料。
+    同一兩天內重跑（例如修了程式再驗證一次）就完全不必再花 FinMind 額度。"""
+    from . import cache
+
+    original = cache._is_fresh
+
+    def fresh(dataset, data_id, fresh_days=None, today=None):
+        try:
+            at = pd.to_datetime(cache.read_meta(dataset, data_id).get("fetched_at"), utc=True)
+            if (pd.Timestamp.now(tz="UTC") - at).total_seconds() < hours * 3600:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return original(dataset, data_id, fresh_days, today)
+
+    cache._is_fresh = fresh
+    try:
+        yield
+    finally:
+        cache._is_fresh = original
+
+
+def load_data(years: int = YEARS, watch: list[dict] | None = None, reuse_hours: float = 36) -> Data:
+    """抓齊實驗室要用的資料；reuse_hours 小時內抓過的直接用快取。"""
+    with _reuse_recent(reuse_hours):
+        return _load_data(years, watch)
+
+
+def _load_data(years: int, watch: list[dict] | None) -> Data:
     from .cache import fetch_finmind_cached
     from .data import get_price_history
     from .datasources import get_index_history
@@ -467,6 +507,11 @@ def plan_timing(data: Data, window: int) -> dict:
     return {d: ([BENCH] if close[d] > ma[d] else []) for d in month_ends(data.days) if ma[d] == ma[d]}
 
 
+def plan_universe(data: Data) -> dict:
+    """名單偏誤的對照組：名單裡的個股全部等權重買進、一直抱著（新掛牌的在下個月底補進來）。"""
+    return {d: [s for s in data.stocks if d in data.c[s]] for d in month_ends(data.days)}
+
+
 PLANNERS = {"revenue": (plan_revenue, lambda cfg: cfg[1]), "trend": (plan_trend, lambda cfg: cfg[1]),
             "timing": (plan_timing, lambda cfg: 1)}
 
@@ -553,13 +598,23 @@ def _stats(ret: pd.Series, bench: pd.Series, fold_days: list[list[str]]) -> dict
             "t_stat": round(t, 2), "win_folds": sum(1 for f in rows if f["excess_pct"] > 0), "folds": rows}
 
 
-def _verdict(stats: dict) -> str:
-    n = len(stats["folds"])
-    if stats["excess_cagr_pct"] > 0 and stats["t_stat"] >= 3 and stats["win_folds"] >= 0.6 * n:
+def _rule(excess: float, t: float, wins: int, n: int) -> str:
+    if excess > 0 and t >= 3 and wins >= 0.6 * n:
         return "strong"
-    if stats["excess_cagr_pct"] > 0 and stats["t_stat"] >= 2 and stats["win_folds"] > 0.5 * n:
+    if excess > 0 and t >= 2 and wins > 0.5 * n:
         return "tentative"
     return "none"
+
+
+def _verdict(stats: dict, vs_universe: dict | None = None) -> str:
+    """strong／tentative：有（強／初步）證據贏 0050。從「事後名單」選股的策略另有 vs_universe（對等權重持有同一份名單），
+    兩邊都過也只給 promising（有跡象，但名單偏誤還沒排除），不算證據。"""
+    n = len(stats["folds"])
+    base = _rule(stats["excess_cagr_pct"], stats["t_stat"], stats["win_folds"], n)
+    if vs_universe is None:
+        return base
+    control = _rule(vs_universe["excess_cagr_pct"], vs_universe["t_stat"], vs_universe["win_folds"], n)
+    return "promising" if base != "none" and control != "none" else "none"
 
 
 def _curve(ret: pd.Series) -> list:
@@ -567,9 +622,13 @@ def _curve(ret: pd.Series) -> list:
     return pts[::5] + ([pts[-1]] if (len(pts) - 1) % 5 else [])
 
 
-def _notes(data: Data) -> list[str]:
+def _notes(data: Data, bench_cagr: float, universe_cagr: float) -> list[str]:
+    gap = round(universe_cagr - bench_cagr, 2)
     notes = [
-        "觀察清單用的是「現在」的名單（市值前 100 大等），等於事後挑贏家；真實成績只會比這裡差。",
+        "觀察清單用的是「現在」的名單（市值前 100 大等），等於事後挑贏家：把這份名單的個股等權重買進抱著，"
+        f"年化 {universe_cagr}%（同期 0050 是 {bench_cagr}%）"
+        + (f"，多出來的 {gap} 個百分點是事後挑名單的虛胖，不是選股能力。" if gap > 0 else "。")
+        + "所以選股型策略要同時贏過 0050 和這個對照才算「有跡象」，而且要換成當時的名單重驗之後才能算證據。",
         "訊號當天收盤後產生、隔天開盤價成交；手續費 0.1425%（未打折）與證交稅都有扣，沒算滑價。",
         "基本面只用當時已公布的年報（每年 4/1 起才用前一年）；月營收在法定公布日（次月 10 日）隔天才使用。",
         (f"股價已還原除權息與分割（共 {data.dividend_events} 筆除權息）。" if data.dividend_events
@@ -595,6 +654,9 @@ def run(data: Data | None = None, years: int = YEARS, save: bool = True, eval_fl
     oos = [d for fd in fold_days for d in fd]
     end = days[-1]
     b_ret = simulate(data, {}, grid_start, end, 1, initial=[BENCH])["ret"].reindex(oos).fillna(0.0)
+    held = [s for s in data.stocks if grid_start in data.c[s]]
+    u_ret = simulate(data, plan_universe(data), grid_start, end, max(1, len(data.stocks)),
+                     initial=held)["ret"].reindex(oos).fillna(0.0)
     default = loader.get_strategy("default") or {"id": "default", "name": "預設策略", "params": {}}
     out = []
     for cand in CANDIDATES:
@@ -615,12 +677,17 @@ def run(data: Data | None = None, years: int = YEARS, save: bool = True, eval_fl
         stats = _stats(ret, b_ret, fold_days)
         for row, name in zip(stats["folds"], chosen):
             row["config"] = name
+        versus = None
+        if cand["universe"]:  # 從事後名單選股的：另外跟「等權重持有同一份名單」比
+            control = _stats(ret, u_ret, fold_days)
+            versus = {k: control[k] for k in ("excess_cagr_pct", "t_stat", "win_folds")}
         out.append({**cand, "configs": configs, "current": chosen[-1] if chosen else None, **stats,
-                    "verdict": _verdict(stats),
+                    "vs_universe": versus, "verdict": _verdict(stats, versus),
                     "exposure_pct": round(float(exposure.reindex(oos).fillna(0.0).mean()) * 100, 1),
                     "trades_per_year": last["trades_per_year"], "cost_pct_per_year": last["cost_pct_per_year"],
                     "curve": _curve(ret)})
     b_stats = _stats(b_ret, b_ret, fold_days)
+    u_stats = _stats(u_ret, b_ret, fold_days)
     report = {
         "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
         "period": {"start": oos[0], "end": oos[-1], "days": len(oos), "years": round(len(oos) / 252, 1),
@@ -630,12 +697,17 @@ def run(data: Data | None = None, years: int = YEARS, save: bool = True, eval_fl
         "benchmark": {"id": BENCH, "name": "抱 0050（含息）" if data.dividend_events else "抱 0050（未含息）",
                       **{k: b_stats[k] for k in ("total_pct", "cagr_pct", "mdd_pct", "vol_pct", "sharpe")},
                       "folds": b_stats["folds"], "curve": _curve(b_ret)},
+        "universe": {"id": "universe", "name": "名單等權重持有（事後名單）", "stocks": len(data.stocks),
+                     **{k: u_stats[k] for k in ("total_pct", "cagr_pct", "excess_cagr_pct", "mdd_pct", "vol_pct",
+                                                "sharpe")},
+                     "folds": u_stats["folds"], "curve": _curve(u_ret)},
         "candidates": out,
-        "passed": [c["id"] for c in out if c["verdict"] != "none"],
+        "passed": [c["id"] for c in out if c["verdict"] in ("strong", "tentative")],
+        "promising": [c["id"] for c in out if c["verdict"] == "promising"],
         "data": {"stocks": len(data.px), "companies": len(data.stocks), "with_revenue": len(data.revenue),
                  "with_fundamentals": sum(1 for s in data.stocks if (data.funds.get(s) or {}).get("eps")),
                  "dividend_events": data.dividend_events, "skipped": data.skipped[:30]},
-        "notes": _notes(data),
+        "notes": _notes(data, b_stats["cagr_pct"], u_stats["cagr_pct"]),
         "seconds": round(time.time() - t0),
     }
     if save:
@@ -665,9 +737,17 @@ def main(argv: list[str] | None = None) -> int:
     p, b = report["period"], report["benchmark"]
     _log(f"完成（{report['seconds']} 秒）：樣本外 {p['start']}～{p['end']}，{b['name']} 年化 {b['cagr_pct']}%、"
          f"最大回撤 {b['mdd_pct']}%")
+    u = report["universe"]
+    _log(f"  對照｜{u['name']}（{u['stocks']} 檔）：年化 {u['cagr_pct']}%（比 0050 {u['excess_cagr_pct']:+}），"
+         f"回撤 {u['mdd_pct']}%")
     for c in report["candidates"]:
+        v = c["vs_universe"]
         _log(f"  {c['name']}：年化 {c['cagr_pct']}%（比 0050 {c['excess_cagr_pct']:+}），回撤 {c['mdd_pct']}%，"
-             f"贏 {c['win_folds']}/{len(c['folds'])} 段，t={c['t_stat']} → {c['verdict']}")
+             f"贏 {c['win_folds']}/{len(c['folds'])} 段，t={c['t_stat']}"
+             + (f"；比名單對照 {v['excess_cagr_pct']:+}、贏 {v['win_folds']} 段、t={v['t_stat']}" if v else "")
+             + f" → {c['verdict']}｜持股 {c['exposure_pct']}%、一年 {c['trades_per_year']} 筆、成本 {c['cost_pct_per_year']}%"
+             + (f"｜目前參數 {c['current']}" if c["current"] else ""))
+        _log("    各段超額：" + " ".join(f"{f['excess_pct']:+.0f}" for f in c["folds"]))
     return 0
 
 
