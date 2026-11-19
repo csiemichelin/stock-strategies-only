@@ -124,6 +124,34 @@ def test_verdict_rules():
     assert lab._verdict({**base, "excess_cagr_pct": 5, "t_stat": 1.9, "win_folds": 9}) == "none"   # 不顯著
     assert lab._verdict({**base, "excess_cagr_pct": -1, "t_stat": 3.5, "win_folds": 9}) == "none"  # 沒贏
     assert lab._verdict({**base, "excess_cagr_pct": 5, "t_stat": 3.5, "win_folds": 5}) == "none"   # 只贏一半的區段
+    # 從事後名單選股的策略：還要贏過「等權重持有同一份名單」，而且最多只算「有跡象」
+    good = {**base, "excess_cagr_pct": 30, "t_stat": 3.5, "win_folds": 9}
+    assert lab._verdict(good, {"excess_cagr_pct": 8, "t_stat": 2.1, "win_folds": 6}) == "promising"
+    assert lab._verdict(good, {"excess_cagr_pct": 8, "t_stat": 1.2, "win_folds": 6}) == "none"  # 贏 0050 只是因為名單虛胖
+
+
+def test_recently_fetched_data_is_reused_without_asking_finmind(tmp_path, monkeypatch):
+    """實驗室同一兩天內重跑：快取裡剛抓過的資料直接用，不再花額度。"""
+    from stock_strategies import cache
+
+    monkeypatch.setattr(cache, "_cache_dir", lambda: tmp_path)
+    asked = []
+
+    def fake_get(params, timeout, max_retries):
+        asked.append(params["dataset"])
+        return {"data": [{"date": "2025-07-15", "stock_id": "2330", "before_price": 100, "after_price": 96}]}
+
+    monkeypatch.setattr(cache, "_rate_limited_get", fake_get)
+    cache.fetch_finmind_cached("TaiwanStockDividendResult", "2330", "2016-01-01")
+    yesterday = pd.Timestamp.now() + pd.Timedelta(days=1)  # 隔天：平常會判定過期、再抓一次
+    monkeypatch.setattr(pd.Timestamp, "now", classmethod(lambda cls, tz=None: yesterday.tz_localize(tz) if tz else yesterday))
+    assert not cache._is_fresh("TaiwanStockDividendResult", "2330", None)
+    with lab._reuse_recent(36):
+        again = cache.fetch_finmind_cached("TaiwanStockDividendResult", "2330", "2016-01-01")
+    assert len(again) == 1 and asked == ["TaiwanStockDividendResult"]  # 36 小時內：沒有再問 FinMind
+    with lab._reuse_recent(12):
+        cache.fetch_finmind_cached("TaiwanStockDividendResult", "2330", "2016-01-01")
+    assert len(asked) == 2  # 超過重用時限才重抓
 
 
 def test_report_end_to_end_on_synthetic_market(monkeypatch):
@@ -137,12 +165,19 @@ def test_report_end_to_end_on_synthetic_market(monkeypatch):
     n_folds = len(report["benchmark"]["folds"])
     assert report["trials"] == 15 and n_folds >= 2
     for c in report["candidates"]:
-        assert c["verdict"] in ("strong", "tentative", "none") and len(c["folds"]) == n_folds
+        assert c["verdict"] in ("strong", "tentative", "promising", "none") and len(c["folds"]) == n_folds
         assert c["curve"][0][0] >= report["period"]["start"] and 0 <= c["exposure_pct"] <= 100
     assert any(c["trades_per_year"] > 0 for c in report["candidates"])
     timing = next(c for c in report["candidates"] if c["id"] == "timing")
     assert all("config" in f for f in timing["folds"]) and timing["current"].endswith("日均線")
-    assert report["passed"] == [c["id"] for c in report["candidates"] if c["verdict"] != "none"]
+    assert report["passed"] == [c["id"] for c in report["candidates"] if c["verdict"] in ("strong", "tentative")]
+    assert report["universe"]["stocks"] == 6 and len(report["universe"]["folds"]) == n_folds
+    assert timing["vs_universe"] is None and timing["verdict"] in ("strong", "tentative", "none")
+    for c in report["candidates"]:
+        if c["universe"]:  # 從事後名單選股的：有對照組的比較，而且最多只會是「有跡象」
+            assert set(c["vs_universe"]) == {"excess_cagr_pct", "t_stat", "win_folds"}
+            assert c["verdict"] in ("promising", "none")
+    assert "事後挑贏家" in report["notes"][0]
 
 
 def test_load_data_adjusts_prices_and_keeps_fund_history(monkeypatch):
@@ -202,3 +237,24 @@ def test_api_serves_latest_report():
     webstore.save(lab.REPORT, {"generated_at": "2026-11-20T08:00:00+08:00", "candidates": []})
     backtest_api._lab["at"] = 0.0
     assert client.get("/api/lab").json()["report"]["generated_at"].startswith("2026-11-20")
+
+
+def test_fetch_waits_until_rolling_quota_recovers(monkeypatch):
+    """FinMind 額度是滾動一小時：用完就每 5 分鐘看一次，恢復了才繼續，不會缺資料也不會空等。"""
+    from stock_strategies import cache
+
+    left = iter([600, 10, 60, 300, 500])  # 開始很多 → 快用完 → 還不夠 → 恢復 → （又用完後）再恢復
+    naps, calls = [], []
+    monkeypatch.setattr(lab, "_quota_left", lambda: next(left))
+    monkeypatch.setattr(lab.time, "sleep", naps.append)
+    monkeypatch.setattr(lab, "_calls", {"n": 0})
+
+    def flaky(x):
+        calls.append(x)
+        if len(calls) == 21:
+            raise cache.FinMindRateLimitError("用完")
+        return x * 2
+
+    assert [lab._fetch(flaky, i) for i in range(20)] == [i * 2 for i in range(20)] and naps == []
+    assert lab._fetch(flaky, 7) == 14   # 第 21 次：先發現只剩 10 次 → 等到恢復；又碰到用完 → 再等一次後成功
+    assert naps == [300, 300, 300] and len(calls) == 22
