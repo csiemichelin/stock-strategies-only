@@ -95,11 +95,17 @@ export type BacktestResponse = { job: BacktestJob; result: BacktestResult | null
 export type LabFold = { start: string; end: string; ret_pct: number; bench_pct: number; excess_pct: number; config?: string };
 export type LabSide = { name: string; total_pct: number; cagr_pct: number; mdd_pct: number; vol_pct: number; sharpe: number; folds: LabFold[]; curve: [string, number][] };
 export type LabVersus = { excess_cagr_pct: number; t_stat: number; win_folds: number };
-export type LabCandidate = LabSide & LabVersus & { id: string; desc: string; kind: "fixed" | "grid"; configs: number; current: string | null; verdict: "strong" | "tentative" | "promising" | "none"; exposure_pct: number; trades_per_year: number; cost_pct_per_year: number; universe?: boolean; vs_universe?: LabVersus | null };
+export type LabVerdict = "strong" | "tentative" | "promising" | "none";
+export type LabStock = { id: string; name: string };
+// 當時名單版（pit）才有：加滑價、換名單大小重跑的結果，目前持股，模擬帳戶
+export type LabBrief = LabVersus & { id: string; cagr_pct: number; vs_universe: LabVersus; verdict: LabVerdict };
+export type LabAccount = { id: string; name: string; verdict: LabVerdict; config: string; since: string | null; days: number; return_pct: number; bench_pct: number; cash_pct: number; decided: string | null; holdings: (LabStock & { shares: number; price: number; weight_pct: number })[]; next: { sell: LabStock[]; keep: LabStock[]; buy: LabStock[] } | null };
+export type LabCandidate = LabSide & LabVersus & { id: string; desc: string; kind: "fixed" | "grid"; configs: number; current: string | null; verdict: LabVerdict; exposure_pct: number; trades_per_year: number; cost_pct_per_year: number; universe?: boolean; vs_universe?: LabVersus | null; with_slippage?: LabBrief; other_tops?: (LabBrief & { top: number })[]; picks?: { decided: string; config: string; stocks: (LabStock & { close: number })[] } | null };
 export type LabReport = {
   generated_at: string; period: { start: string; end: string; days: number; years: number; data_start: string };
-  capital: number; fold_months: number; train_days: number; trials: number; benchmark: LabSide & { id: string }; universe?: LabSide & { id: string; stocks: number; excess_cagr_pct: number }; candidates: LabCandidate[]; passed: string[]; promising?: string[];
-  data: { stocks: number; companies: number; with_revenue: number; with_fundamentals: number; dividend_events: number; skipped: string[] }; notes: string[]; seconds: number;
+  capital: number; fold_months: number; train_days: number; trials: number; benchmark: LabSide & { id: string }; universe?: LabSide & { id: string; stocks: number; excess_cagr_pct: number; other_tops?: { top: number; cagr_pct: number; excess_cagr_pct: number }[] }; candidates: LabCandidate[]; passed: string[]; promising?: string[];
+  top?: number; liquidity_days?: number; slip_pct?: number; tracking?: { after: string; as_of: string; accounts: LabAccount[] };
+  data: { stocks?: number; companies?: number; with_revenue: number; with_fundamentals?: number; dividend_events: number; skipped?: string[]; days?: number; stocks_ever?: number; other_adjustments?: number; changes_per_month?: number }; notes: string[]; seconds: number;
 };
 export type DaytradeCandidate = { stock_id: string; name: string; close: number; change_pct: number; volume_lots: number; volume_ratio: number; amount: number; vwap: number; daytrader_share: number | null; score?: number; score_parts?: Record<string, number> };
 export type DaytradeReviewItem = { stock_id: string; name: string; score: number; recommended: boolean; outcome: "win" | "loss" | "flat" | "no_data"; entry?: number; exit?: number; exit_time?: string; ret_pct?: number; gap_pct?: number | null; max_up_pct?: number; max_down_pct?: number };
@@ -167,7 +173,7 @@ export const api = {
   stopSim: (slot?: string) => jfetch<SimResponse>("/api/sim/stop", slot == null ? { method: "POST" } : { method: "POST", body: JSON.stringify({ slot }) }),
   removeSim: (slot: string) => jfetch<SimResponse>("/api/sim/remove", { method: "POST", body: JSON.stringify({ slot }) }),
   getBacktest: (signal?: AbortSignal) => jfetch<BacktestResponse>("/api/backtest", { signal }),
-  getLab: (signal?: AbortSignal) => jfetch<{ report: LabReport | null }>("/api/lab", { signal }),
+  getLab: (signal?: AbortSignal) => jfetch<{ report: LabReport | null; pit?: LabReport | null }>("/api/lab", { signal }),
   startBacktest: (strategy_ids: string[], include_daytrade: boolean, start_date: string, capital: number, recompute = false) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_ids, include_daytrade, start_date, capital, recompute }) }),
   cancelBacktest: () => jfetch<BacktestResponse>("/api/backtest/cancel", { method: "POST" }),
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
