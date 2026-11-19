@@ -1,6 +1,7 @@
 """回測比較：策略（用模擬交易同一套買賣規則逐日回放） vs 同期買進持有 0050。
 
-- 策略：sim.replay() 從開始日逐日跑到最新交易日；期末持股以最後收盤價結算（扣手續費、證交稅）
+- 策略：sim.replay() 從開始日逐日跑到最新交易日；期末持股以最後收盤價結算（扣手續費、證交稅）。
+  算過的交易日記在回測紀錄（daylog），之後再回測只算沒算過的新交易日
 - 0050：開始日開盤價用全部資金買零股，持有到最後一天收盤賣出（同樣扣費稅）
 - 指標：總報酬、最大回撤、勝率（已結算交易）、交易次數、平均賺／賠、獲利因子、平均持股比例
 """
@@ -72,11 +73,46 @@ def benchmark(capital: float, dates: list[str], px) -> dict:
             "trades": 1 if shares else 0, "win_rate": None, "fees": round(buy_fee + sell_costs, 2)}
 
 
-def run(capital: float, start_date: str, strategy: dict, *, progress=None, cancel=None) -> dict | None:
-    """跑完整比較。被取消回傳 None。"""
+def _bench_from_log(days: list[str]):
+    """0050 若在觀察清單裡，回測紀錄就有每天的 K 棒，不用再問 FinMind。"""
+    import pandas as pd
+
+    from . import daylog
+
+    try:
+        log = daylog.load()
+    except Exception:  # noqa: BLE001
+        return None
+    rows = []
+    for d in days:
+        b = log.bars.get(d, {}).get(BENCHMARK_ID)
+        if not b or b[0] is None or b[3] is None:
+            return None
+        rows.append({"date": d, "open": b[0], "close": b[3]})
+    return pd.DataFrame(rows) if rows else None
+
+
+def _logged_bench_days(start_date: str) -> list[str]:
+    """回測紀錄裡 start_date 之後的交易日（紀錄落後超過一個交易日就不用，回空的）。"""
+    from . import daylog
+
+    try:
+        log = daylog.load()
+    except Exception:  # noqa: BLE001
+        return []
+    days = sorted(d for d in log.bars if d >= start_date)
+    if not days or daylog._weekdays_between(days[-1], daylog.latest_expected_day()) > 1:
+        return []
+    return days
+
+
+def run(capital: float, start_date: str, strategy: dict, *, progress=None, cancel=None,
+        recompute: bool = False) -> dict | None:
+    """跑完整比較。被取消回傳 None。recompute=True：不沿用回測紀錄，全部重算。"""
     from .data import get_price_history
 
-    state = sim.replay(capital, start_date, strategy, progress=progress, cancel=cancel)
+    state = sim.replay(capital, start_date, strategy, progress=progress, cancel=cancel, lazy_tail=True,
+                       recompute=recompute)
     if cancel is not None and cancel.is_set():
         return None
     if progress:
@@ -93,7 +129,8 @@ def run(capital: float, start_date: str, strategy: dict, *, progress=None, cance
     strat = {**_metrics(curve, capital, final), **trade_stats(final_state["trades"]),
              "avg_exposure_pct": round(sum(exposure) / len(exposure), 1) if exposure else 0.0, "curve": curve}
     try:
-        bench = benchmark(capital, days, get_price_history(BENCHMARK_ID, 2))
+        px = _bench_from_log(days)
+        bench = benchmark(capital, days, px if px is not None else get_price_history(BENCHMARK_ID, 2))
     except Exception as exc:  # 0050 抓不到不影響策略結果
         bench = {"available": False, "error": str(exc)[:200]}
 
@@ -107,6 +144,7 @@ def run(capital: float, start_date: str, strategy: dict, *, progress=None, cance
         "benchmark": {"stock_id": BENCHMARK_ID, "name": BENCHMARK_NAME, **bench},
         "trades": final_state["trades"],
         "skipped": state.get("skipped", []),
+        "log": state.get("log_info"),
     }
 
 
@@ -114,8 +152,12 @@ def benchmark_only(capital: float, start_date: str) -> dict:
     """只比當沖（雲端不跑一般策略）時，0050 自己用開始日之後的交易日。"""
     from .data import get_price_history
 
-    px = get_price_history(BENCHMARK_ID, 2)
-    days = sorted(str(d)[:10] for d in px["date"] if str(d)[:10] >= start_date)
+    days, px = _logged_bench_days(start_date), None
+    if days:
+        px = _bench_from_log(days)  # 紀錄夠新就不問 FinMind
+    if px is None:
+        px = get_price_history(BENCHMARK_ID, 2)
+        days = sorted(str(d)[:10] for d in px["date"] if str(d)[:10] >= start_date)
     bench = benchmark(capital, days, px)
     return {"strategy": None, "capital": capital, "start_date": days[0] if days else start_date,
             "end_date": days[-1] if days else start_date, "trading_days": len(days), "result": None,
@@ -123,7 +165,8 @@ def benchmark_only(capital: float, start_date: str) -> dict:
             "runs": []}
 
 
-def run_many(capital: float, start_date: str, strategies: list[dict], *, progress=None, cancel=None) -> dict | None:
+def run_many(capital: float, start_date: str, strategies: list[dict], *, progress=None, cancel=None,
+             recompute: bool = False) -> dict | None:
     """多個策略依序回放（資料有快取，第二個之後很少再用 FinMind 額度），0050 只算一次。"""
     if not strategies:
         return benchmark_only(capital, start_date)
@@ -139,12 +182,13 @@ def run_many(capital: float, start_date: str, strategies: list[dict], *, progres
 
         if progress:
             progress(phase=f"{label}・準備中", completed=0, total=None, current=None)
-        res = run(capital, start_date, strategy, progress=prog, cancel=cancel)
+        res = run(capital, start_date, strategy, progress=prog, cancel=cancel,
+                  **({"recompute": True} if recompute else {}))
         if res is None:
             return None
         first = first or res
         runs.append({"strategy": res.get("strategy"), "result": res.get("result"), "trades": res.get("trades", []),
-                     "skipped": res.get("skipped", [])})
+                     "skipped": res.get("skipped", []), "log": res.get("log")})
         import gc
 
         gc.collect()
