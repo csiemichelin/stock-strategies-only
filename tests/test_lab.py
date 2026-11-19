@@ -143,9 +143,11 @@ def test_recently_fetched_data_is_reused_without_asking_finmind(tmp_path, monkey
 
     monkeypatch.setattr(cache, "_rate_limited_get", fake_get)
     cache.fetch_finmind_cached("TaiwanStockDividendResult", "2330", "2016-01-01")
-    yesterday = pd.Timestamp.now() + pd.Timedelta(days=1)  # 隔天：平常會判定過期、再抓一次
-    monkeypatch.setattr(pd.Timestamp, "now", classmethod(lambda cls, tz=None: yesterday.tz_localize(tz) if tz else yesterday))
-    assert not cache._is_fresh("TaiwanStockDividendResult", "2330", None)
+    meta_path = cache._meta_path("TaiwanStockDividendResult", "2330")
+    meta = json.loads(meta_path.read_text())
+    meta["fetched_at"] = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=30)).isoformat()  # 當成 30 小時前抓的
+    meta_path.write_text(json.dumps(meta))
+    assert not cache._is_fresh("TaiwanStockDividendResult", "2330", None)  # 已經是「昨天以前」：平常會再抓一次
     with lab._reuse_recent(36):
         again = cache.fetch_finmind_cached("TaiwanStockDividendResult", "2330", "2016-01-01")
     assert len(again) == 1 and asked == ["TaiwanStockDividendResult"]  # 36 小時內：沒有再問 FinMind
