@@ -14,9 +14,11 @@ def _isolate_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("WEBSTORE_DIR", str(tmp_path / "webstore"))
     from stock_strategies import webstore
     webstore._memory.clear()
-    from stock_strategies import cache, sim
+    from stock_strategies import cache, daylog, fundstore, sim
     monkeypatch.setattr(sim, "QUOTA_WAITER", None)      # 網頁回測會設成「等額度」，測試間不要互相影響
     monkeypatch.setattr(cache, "_quota_block_until", 0.0)
+    daylog.forget()      # 回測紀錄、基本面快照都是行程內快取，每個測試從空的開始
+    fundstore.reset()
     yield
 
 

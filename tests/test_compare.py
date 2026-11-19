@@ -123,9 +123,12 @@ def test_low_finmind_quota_starts_anyway_and_says_it_will_wait(tmp_path, monkeyp
     gate.set()
 
 
-def test_replay_waits_for_quota_then_continues(monkeypatch):
-    import pandas as pd
+def _index(days=200):
+    dates = pd.bdate_range(end=date.today(), periods=days).strftime("%Y-%m-%d")
+    return pd.DataFrame({"date": dates, "close": [100.0 + i for i in range(days)]})
 
+
+def test_replay_waits_for_quota_then_continues(monkeypatch):
     from stock_strategies import cache, datasources, sheet, sim
 
     monkeypatch.setattr(sheet, "read_watchlist", lambda: [{"stock_id": "2330", "name": "x"}])
@@ -139,15 +142,13 @@ def test_replay_waits_for_quota_then_continues(monkeypatch):
 
     monkeypatch.setattr(sim, "_full_history", flaky)
     monkeypatch.setattr(sim, "QUOTA_WAITER", lambda report, cancel, force=False: waits.append(force))
-    monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: pd.DataFrame())
-    with pytest.raises(RuntimeError, match="加權指數"):
+    monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: _index())
+    with pytest.raises(RuntimeError, match="歷史股價"):  # 重試後抓到的是空資料 → 沒有任何股票可回放
         sim.replay(10_000, START, {"id": "default", "name": "x"})
     assert len(calls) == 2 and True in waits  # 用完 → 等 → 重試成功
 
 
 def test_replay_stops_with_clear_message_when_quota_runs_out(monkeypatch):
-    import pandas as pd
-
     from stock_strategies import cache, datasources, sheet, sim
 
     monkeypatch.setattr(sheet, "read_watchlist", lambda: [{"stock_id": str(i), "name": "x"} for i in range(10)])
@@ -156,12 +157,30 @@ def test_replay_stops_with_clear_message_when_quota_runs_out(monkeypatch):
         raise cache.FinMindRateLimitError("FinMind 免費額度暫時用完（每小時 600 次），約 5 分鐘後再試")
 
     monkeypatch.setattr(sim, "_full_history", no_quota)
-    monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: _index())
     with pytest.raises(RuntimeError, match="額度用完"):
         sim.replay(10_000, START, {"id": "default", "name": "x"})
-    monkeypatch.setattr(sheet, "read_watchlist", lambda: [])
+    monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: pd.DataFrame())
     with pytest.raises(RuntimeError, match="加權指數"):
         sim.replay(10_000, START, {"id": "default", "name": "x"})
+
+
+def test_backtest_with_enough_log_needs_no_quota(tmp_path, monkeypatch):
+    """回測紀錄夠用時不必抓資料：額度再少也不提醒、不估算。"""
+    import threading
+
+    import api.cloud as cloud
+    from stock_strategies import daylog, sim
+
+    gate = threading.Event()
+    c, _ = _client(tmp_path, monkeypatch, lambda *a, **k: gate.wait(5) and {})
+    monkeypatch.setattr(cloud, "finmind_usage", lambda *a, **k: {"used": 599, "limit": 600, "remaining": 1})
+    monkeypatch.setattr(daylog, "needs_data", lambda strategy, start, log=None: False)
+    monkeypatch.setattr(sim, "estimate_finmind_calls", lambda *a, **k: pytest.fail("不該估算"))
+    r = c.post("/api/backtest", json={"start_date": START})
+    assert r.status_code == 200, r.text
+    assert r.json()["job"]["params"]["quota_note"] is None
+    gate.set()
 
 
 def test_api_multi_strategy_and_daytrade(tmp_path, monkeypatch):

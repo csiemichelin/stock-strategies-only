@@ -173,7 +173,7 @@ def test_replay_pruning_gives_identical_trades(monkeypatch):
     idx = _synthetic(n=900, seed=99)
     monkeypatch.setattr(datasources, "get_index_history", lambda *a, **k: idx)
     start = raws["S0"]["date"].iloc[-150]
-    a = sim.replay(10_000, start, {"id": "default", "name": "預設"}, prune=True)
-    b = sim.replay(10_000, start, {"id": "default", "name": "預設"}, prune=False)
+    a = sim.replay(10_000, start, {"id": "default", "name": "預設"}, prune=True, use_log=False)
+    b = sim.replay(10_000, start, {"id": "default", "name": "預設"}, prune=False, use_log=False)
     assert a["trades"] == b["trades"] and a["equity"] == b["equity"]
     assert a["trades"], "合成資料應該要有交易，否則測試沒意義"
