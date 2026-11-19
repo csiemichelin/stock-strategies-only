@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 import traceback
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -62,6 +63,7 @@ class _Job:
 
 job = _Job()
 _last: dict = {"result": None}
+_lab: dict = {"at": 0.0, "report": None}  # 策略實驗室報告：GitHub Actions 每月產生，這裡每 10 分鐘重讀一次
 
 
 def last_result():
@@ -116,6 +118,16 @@ def install(app: FastAPI) -> None:
     @app.get("/api/backtest")
     def get_backtest():
         return {"job": job.snapshot(), "result": last_result()}
+
+    @app.get("/api/lab")
+    def get_lab():
+        """策略實驗室最近一次的樣本外驗證報告（stock_strategies/lab.py 產生，存在 webstore）。"""
+        if time.monotonic() - _lab["at"] > (600 if _lab["report"] else 30) or not _lab["at"]:
+            try:
+                _lab.update(report=webstore.load("lab_report", fresh=True), at=time.monotonic())
+            except Exception as exc:  # noqa: BLE001
+                print(f"[webstore] load lab_report failed: {exc}")
+        return {"report": _lab["report"]}
 
     @app.post("/api/backtest")
     def start_backtest(payload: BacktestIn):
