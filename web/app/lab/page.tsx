@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api, errorMessage, LabCandidate, LabFold, LabReport, LabSide, LabStock, LabVerdict } from "@/lib/api";
 import { EmptyState, ErrorCard, Skeleton } from "@/components/Feedback";
 
-const COLORS = ["#60a5fa", "#a78bfa", "#34d399", "#f472b6", "#fb923c"];
+const COLORS = ["#60a5fa", "#a78bfa", "#34d399", "#f472b6", "#fb923c", "#22d3ee"];
 const BENCH_COLOR = "#fbbf24";
 const UNIVERSE_COLOR = "#94a3b8";
 const VERDICT: Record<LabVerdict, { text: string; cls: string }> = {
@@ -58,6 +58,7 @@ function Conclusion({ report, pit }: { report: LabReport | null; pit: LabReport 
   const passed = passedOf(pit);
   const v32 = report?.candidates.find(c => c.id === "v32");
   const bench = (pit ?? report)!.benchmark;
+  const shrink = pit && report ? pit.candidates.flatMap(c => { const old = report.candidates.find(o => o.id === c.id); return old ? [{ name: c.name, was: old.excess_cagr_pct, now: c.excess_cagr_pct }] : []; }) : [];
   return <div className={"card space-y-2 text-base leading-7 " + (passed.length ? "border-rise/40" : "border-line")}>
     <p className="eyebrow">目前的結論</p>
     {pit ? (passed.length
@@ -65,6 +66,7 @@ function Conclusion({ report, pit }: { report: LabReport | null; pit: LabReport 
       : <p>用當時的名單重驗後，目前<b>沒有</b>任何策略有足夠的樣本外證據贏過抱 0050。</p>)
       : <p>「當時的名單」版的重驗還沒有結果；下面是用現在的觀察清單驗證的結果，選股型策略的數字有虛胖。</p>}
     {v32 && <p>每日選股用的 <b>V3.2 現行策略</b>：樣本外年化 {pct(v32.cagr_pct)}，比 0050 每年 <span className={tone(v32.excess_cagr_pct)}>{pct(v32.excess_cagr_pct)}</span>（交易成本每年約 {v32.cost_pct_per_year}%）——{v32.verdict === "none" ? "沒有證據贏過抱 0050" : VERDICT[v32.verdict].text}。</p>}
+    {shrink.length > 0 && <p>名單偏誤有多大（每年比 0050 多幾個百分點）：{shrink.map(x => x.name + " 用現在的名單 " + pct(x.was) + " → 用當時的名單 " + pct(x.now)).join("；")}。同一套規則，差別只在名單是不是事後挑的。</p>}
     <p className="text-sm text-muted">同期{bench.name}年化 {pct(bench.cagr_pct)}、最大回撤 {pct(bench.mdd_pct, false)}。「有證據」只代表過去的樣本外期間站得住腳，不保證以後也會賺；下面的模擬帳戶會每天往前記錄，看它之後跟不跟得上。</p>
   </div>;
 }
