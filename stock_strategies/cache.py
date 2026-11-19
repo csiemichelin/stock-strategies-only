@@ -130,8 +130,8 @@ def _freq_of(dataset: str) -> str:
         return "quarterly"          # 季報才更新，max_date 是季末日，不可當每日判過期
     if dataset == "TaiwanStockMonthRevenue":
         return "monthly"
-    if dataset == "TaiwanStockShareholding":
-        return "weekly"
+    if dataset in ("TaiwanStockShareholding", "TaiwanStockDividendResult"):
+        return "weekly"             # 除權息一年才幾筆：當天抓過就用快取（策略實驗室重跑時不必再抓）
     if dataset == "TaiwanStockInfo":
         return "static"
     return "daily"
