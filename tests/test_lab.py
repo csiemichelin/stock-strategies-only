@@ -231,14 +231,18 @@ def test_api_serves_latest_report():
     from api import backtest_api
     from stock_strategies import webstore
 
-    backtest_api._lab.update(at=0.0, report=None)
+    backtest_api._lab.update(at=0.0, report=None, pit=None)
     app = FastAPI()
     backtest_api.install(app)
     client = TestClient(app)
-    assert client.get("/api/lab").json() == {"report": None}  # 還沒跑過
+    assert client.get("/api/lab").json() == {"report": None, "pit": None}  # 還沒跑過
     webstore.save(lab.REPORT, {"generated_at": "2026-11-20T08:00:00+08:00", "candidates": []})
     backtest_api._lab["at"] = 0.0
     assert client.get("/api/lab").json()["report"]["generated_at"].startswith("2026-11-20")
+    webstore.save("lab_pit_report", {"generated_at": "2026-11-21T20:10:00+08:00", "candidates": []})  # 當時名單版
+    backtest_api._lab["at"] = 0.0
+    body = client.get("/api/lab").json()
+    assert body["pit"]["generated_at"].startswith("2026-11-21") and body["report"]["generated_at"].startswith("2026-11-20")
 
 
 def test_fetch_waits_until_rolling_quota_recovers(monkeypatch):
@@ -260,3 +264,14 @@ def test_fetch_waits_until_rolling_quota_recovers(monkeypatch):
     assert [lab._fetch(flaky, i) for i in range(20)] == [i * 2 for i in range(20)] and naps == []
     assert lab._fetch(flaky, 7) == 14   # 第 21 次：先發現只剩 10 次 → 等到恢復；又碰到用完 → 再等一次後成功
     assert naps == [300, 300, 300] and len(calls) == 22
+
+
+def test_monthly_decision_days_are_days_you_can_recognise_on_the_day_itself():
+    # 2026 年 10 月：10/9（補假）、10/10（六）休市 → 申報期限順延到 10/12，10/13 收盤後才確定資料到齊
+    october = ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07",
+               "2026-10-08", "2026-10-12", "2026-10-13", "2026-10-14"]
+    assert lab.mid_months(october) == ["2026-10-13"]         # 資料從 9/29 才開始：9 月看不出期限是哪天，不算
+    assert lab.mid_months(october[:9]) == []                 # 只到 10/12：還不能決定
+    assert lab.mid_months(["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12"]) == ["2026-11-11"]  # 10 日有開盤：隔天
+    assert lab.month_starts(october) == ["2026-10-01"]       # 月初第一個交易日（這時才確定 9/30 是上個月最後一天）
+    assert lab.month_ends(october) == ["2026-09-30"]         # 最後一天是不是月底，要等下個月開盤才知道
