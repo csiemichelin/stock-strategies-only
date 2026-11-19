@@ -1,0 +1,49 @@
+name: Strategy Lab (point-in-time)
+
+# 用「當時的名單」重新驗證選股策略。資料全部來自證交所與公開資訊觀測站，不花 FinMind 額度。
+# 第一次要抓十年的每日全市場行情（約三小時，兩次請求之間固定間隔）；之後每次只補新的交易日。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy-lab-pit
+  cancel-in-progress: false
+
+jobs:
+  pit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: uv sync
+
+      - name: Restore TWSE data
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/twse
+          key: twse-pit-${{ github.run_id }}
+          restore-keys: twse-pit-
+
+      - name: Download TWSE / MOPS history
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: uv run python -m stock_strategies.twse --years 10
+
+      - name: Save TWSE data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/twse
+          key: twse-pit-${{ github.run_id }}
