@@ -37,6 +37,7 @@ class BacktestIn(BaseModel):
     include_daytrade: bool = False
     start_date: date
     capital: float = Field(10_000, ge=1_000, le=100_000_000)
+    recompute: bool = False  # 不沿用回測紀錄，全部重算（觀察清單改了的時候用）
 
 
 class _Job:
@@ -85,7 +86,7 @@ def _runner():
 
         sim.QUOTA_WAITER = quota_waiter()  # 額度不夠就等下一小時自動繼續，不直接失敗
         return compare.run_many(payload["capital"], payload["start_date"], payload["strategies"],
-                                progress=progress, cancel=cancel)
+                                progress=progress, cancel=cancel, recompute=bool(payload.get("recompute")))
 
     from api.cloud import run_in_subprocess
 
@@ -144,13 +145,19 @@ def install(app: FastAPI) -> None:
         if strategies and usage:
             from stock_strategies import loader as _loader, sim as _sim
 
+            from stock_strategies import daylog as _daylog
+
             years = max(int(_loader.merge_params(s)["backtest_years"]) for s in strategies) + 1
             try:
-                need = _sim.estimate_finmind_calls(years)["total"]
+                start_s = payload.start_date.isoformat()
+                fetch = payload.recompute or any(_daylog.needs_data(s, start_s) for s in strategies)
+                need = _sim.estimate_finmind_calls(years)["total"] if fetch else 0  # 紀錄夠用就不抓資料
             except Exception as exc:  # noqa: BLE001 估不出來就用保守值
                 print(f"[backtest] estimate failed: {exc}")
                 need = MIN_QUOTA
-            if usage["remaining"] < need + QUOTA_MARGIN:
+            finally:
+                _daylog.forget()
+            if need and usage["remaining"] < need + QUOTA_MARGIN:
                 quota_note = (f"這次大約要用 {need} 次 FinMind，這個小時只剩 {usage['remaining']} 次："
                               "會先用完本小時的額度，再自動等下一小時繼續（可以關掉頁面）")
         today = datetime.now(TZ).date()
@@ -172,7 +179,7 @@ def install(app: FastAPI) -> None:
         job.update(status="running", phase="準備中", completed=0, total=None, current=None, error=None,
                    params=params, started_at=datetime.now(TZ).isoformat(timespec="seconds"))
         data = {"capital": payload.capital, "start_date": payload.start_date.isoformat(), "strategies": strategies,
-                "params": params}
+                "params": params, "recompute": payload.recompute}
         threading.Thread(target=_execute, args=(data,), name="backtest", daemon=True).start()
         return {"job": job.snapshot(), "result": last_result()}
 
