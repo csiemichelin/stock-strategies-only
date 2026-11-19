@@ -37,6 +37,14 @@ jobs:
       - name: Install deps
         run: uv sync
 
+      # 同一天重跑（例如中途出錯修好再跑）時沿用已抓的資料，不重複花 FinMind 額度
+      - name: Restore FinMind cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/finmind
+          key: finmind-lab-${{ github.run_id }}
+          restore-keys: finmind-lab-
+
       - name: Walk-forward validation
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
@@ -49,3 +57,10 @@ jobs:
           else
             uv run python -m stock_strategies.lab --if-due 25
           fi
+
+      - name: Save FinMind cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/finmind
+          key: finmind-lab-${{ github.run_id }}
