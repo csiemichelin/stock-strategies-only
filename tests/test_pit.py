@@ -185,7 +185,8 @@ def _report(verdict="tentative", nxt=None, as_of="2026-11-11", changed=None):
                "days": 8, "return_pct": 1.5, "bench_pct": 0.7, "cash_pct": 2.0, "decided": as_of, "next": nxt, "changed": changed,
                "holdings": [{"id": "2330", "name": "台積電", "shares": 10, "price": 1000.0, "weight_pct": 98.0}]}
     cand = {"id": "revenue", "name": "月營收動能", "verdict": verdict, "cagr_pct": 30.0, "excess_cagr_pct": 5.0,
-            "vs_universe": {"excess_cagr_pct": 4.0, "t_stat": 2.1, "win_folds": 9}}
+            "t_stat": 2.3 if verdict != "none" else 0.8, "win_folds": 9 if verdict != "none" else 7, "mdd_pct": -58.9,
+            "folds": [{}] * 14, "vs_universe": {"excess_cagr_pct": 4.0, "t_stat": 2.1, "win_folds": 9}}
     return {"period": {"years": 6.8, "end": as_of}, "benchmark": {"cagr_pct": 25.0}, "universe": {"cagr_pct": 26.0},
             "candidates": [cand], "tracking": {"after": "2026-10-30", "as_of": as_of, "accounts": [account]}}
 
@@ -201,7 +202,8 @@ def test_line_message_is_sent_on_first_run_rebalance_days_and_fridays_only():
     state = {**state, "told": {"revenue": "2026-10-12"}}
     text, told = pit.line_message(_report(nxt=swap), state, v32_excess=-18.9)
     assert "換股" in text.splitlines()[0] and "賣出：2330 台積電" in text and "買進：2317 鴻海" in text
-    assert "V3.2" in text and "-18.9" in text
+    assert "V3.2" in text and "每年輸 0050 18.9 個百分點" in text
+    assert "每年贏 0050 5.0 個百分點、贏當時名單 4.0；14 段贏 9 段、t 值 2.3" in text
     assert pit.line_message(_report(nxt=swap), told)[0] is None       # 同一次換股只通知一次
     text, weekly = pit.line_message(_report(as_of="2026-11-13"), told)  # 週五
     assert "每週摘要" in text.splitlines()[0] and "模擬帳戶 11/02 起 +1.5%（同期 0050 +0.7%）" in text
@@ -212,6 +214,11 @@ def test_line_message_never_pushes_picks_of_an_unvalidated_strategy():
     swap = {"sell": [], "keep": [], "buy": [{"id": "2317", "name": "鴻海"}]}
     text, state = pit.line_message(_report("none", swap), {})
     assert "沒有任何策略有足夠的樣本外證據" in text and "未通過驗證，僅觀察" in text
+    # 數字比 0050 高但沒通過：要講清楚為什麼不算數
+    assert "比 0050 多 5.0 個百分點，但不穩定：14 段只贏 7 段、t 值 0.8（要 2 以上）、最大回撤 -58.9%" in text
+    loser = _report("none")
+    loser["candidates"][0]["excess_cagr_pct"] = -4.97
+    assert "每年輸 0050 4.97 個百分點" in pit.line_message(loser, {})[0]
     assert "鴻海" not in text and "台積電" not in text               # 沒通過驗證：只報成績，不報持股與換股
     assert pit.line_message(_report("none", swap), state)[0] is None  # 也不會因為它換股就推播
 
