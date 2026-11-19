@@ -1,9 +1,17 @@
 name: Strategy Lab (point-in-time)
 
-# 用「當時的名單」重新驗證選股策略。資料全部來自證交所與公開資訊觀測站，不花 FinMind 額度。
-# 第一次要抓十年的每日全市場行情（約三小時，兩次請求之間固定間隔）；之後每次只補新的交易日。
+# 用「當時的名單」驗證選股策略，並且每天更新模擬帳戶。資料全部來自證交所與公開資訊觀測站，不花 FinMind 額度。
+# 第一次要抓十年的每日全市場行情（約三小時，兩次請求之間固定間隔）；之後每次只補新的交易日，幾分鐘就跑完。
 on:
+  schedule:
+    # 每個交易日台灣時間 20:10（當天的行情與月營收都公布之後）
+    - cron: "10 12 * * 1-5"
   workflow_dispatch:
+    inputs:
+      notify:
+        description: "有換股或每週摘要時多推一則 LINE（排程執行時一律會推）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,14 +44,32 @@ jobs:
           key: twse-pit-${{ github.run_id }}
           restore-keys: twse-pit-
 
-      - name: Download TWSE / MOPS history
+      - name: Validate on the point-in-time universe
         env:
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           PYTHONUNBUFFERED: "1"
-        run: uv run python -m stock_strategies.twse --years 10
+        run: |
+          # 排程執行會推 LINE（到 Settings → Secrets and variables → Variables 設 LAB_NOTIFY=0 可以關掉）；手動執行要勾選才推
+          if { [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.LAB_NOTIFY }}" != "0" ]; } || [ "${{ inputs.notify }}" = "true" ]; then
+            uv run python -m stock_strategies.pit --notify
+          else
+            uv run python -m stock_strategies.pit
+          fi
+
+      # 快取用「最後一個行情日＋月營收月數」當名字：內容沒變就不會多存一份
+      - name: Data stamp
+        id: stamp
+        if: always()
+        run: |
+          stamp=$(uv run python -c "from stock_strategies import twse; print(twse.stamp())" 2>/dev/null | tail -1)
+          echo "stamp=${stamp:-partial-$GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Save TWSE data
         if: always()
         uses: actions/cache/save@v4
         with:
           path: .cache/twse
-          key: twse-pit-${{ github.run_id }}
+          key: twse-pit-${{ steps.stamp.outputs.stamp }}
