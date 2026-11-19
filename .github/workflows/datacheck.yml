@@ -1,6 +1,7 @@
 name: Data Source Check
 
-# 手動執行：確認 GitHub Actions 的機器連不連得上證交所／櫃買／公開資訊觀測站（策略實驗室的「當時名單」驗證要用，不花 FinMind 額度）
+# 手動執行：確認 GitHub Actions 的機器連得上證交所／公開資訊觀測站，並印出各資料的實際格式
+# （策略實驗室的「當時名單」驗證要用，完全不花 FinMind 額度）
 on:
   workflow_dispatch:
 
@@ -10,19 +11,61 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Reach TWSE / TPEx / MOPS
+      - name: Formats
         run: |
-          probe() {
-            code=$(curl -s -L -m 30 -A "Mozilla/5.0 (stock-strategies data check)" -o /tmp/out -w "%{http_code}" "$2")
-            echo "$1 http=$code bytes=$(wc -c < /tmp/out) head=$(head -c 420 /tmp/out | tr -d '\r\n' | iconv -f utf-8 -t utf-8 -c)"
-            sleep 3
-          }
-          probe twse_quotes_2024 "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=20240102&type=ALLBUT0999&response=json"
-          probe twse_quotes_2018 "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=20180102&type=ALLBUT0999&response=json"
-          probe twse_exright "https://www.twse.com.tw/rwd/zh/exRight/TWT49U?startDate=20240701&endDate=20240731&response=json"
-          probe tpex_quotes_2024 "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=2024/01/02&type=EW&response=json"
-          probe tpex_quotes_2018 "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=2018/01/02&type=EW&response=json"
-          probe twse_openapi_revenue "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
-          probe mops_revenue_2024 "https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_113_1_0.html"
+          cat > /tmp/p.py <<'EOF'
+          import json, re, time, urllib.request
+          UA = {"User-Agent": "Mozilla/5.0 (stock-strategies data check)"}
+          T = "https://www.twse.com.tw/rwd/zh/"
+          def get(url, enc="utf-8"):
+              req = urllib.request.Request(url, headers=UA)
+              with urllib.request.urlopen(req, timeout=40) as r:
+                  raw = r.read()
+              time.sleep(3)
+              return raw.decode(enc, "replace")
+          def show(tag, fn, *a):
+              try:
+                  print(tag, json.dumps(fn(*a), ensure_ascii=False)[:1700], flush=True)
+              except Exception as e:
+                  print(tag, "ERROR", repr(e)[:300], flush=True)
+          def quotes(day, ids):
+              j = json.loads(get(T + "afterTrading/MI_INDEX?date=" + day + "&type=ALLBUT0999&response=json"))
+              tabs = [t for t in j.get("tables", []) if "證券代號" in (t.get("fields") or [])]
+              if not tabs:
+                  return {"keys": list(j), "stat": j.get("stat"), "raw": json.dumps(j, ensure_ascii=False)[:300]}
+              t = tabs[0]
+              rows = {r[0]: r for r in t["data"]}
+              signs = {}
+              for r in t["data"]:
+                  signs[r[9]] = signs.get(r[9], 0) + 1
+              idx = [r for x in j["tables"] if "指數" in (x.get("fields") or []) for r in x["data"] if r[0] == "發行量加權股價指數"]
+              return {"stat": j.get("stat"), "fields": t["fields"], "n": len(t["data"]), "rows": [rows.get(i) for i in ids], "signs": signs, "taiex": idx[:1]}
+          def table(path):
+              j = json.loads(get(T + path))
+              return {"stat": j.get("stat"), "title": j.get("title"), "fields": j.get("fields"), "n": len(j.get("data") or []), "rows": (j.get("data") or [])[:2]}
+          def mops(name):
+              html = get("https://mopsov.twse.com.tw/nas/t21/sii/" + name, "big5")
+              data = []
+              for r in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+                  cells = [re.sub(r"<[^>]+>|&nbsp;", "", c).strip() for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, re.S)]
+                  if cells and re.fullmatch(r"\d{4}", cells[0]):
+                      data.append(cells)
+              i = html.find("<tr align=right")
+              heads = re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)[:14]
+              return {"len": len(html), "n": len(data), "ncols": sorted({len(d) for d in data}), "rows": data[:2], "heads": [re.sub(r"<[^>]+>", "", h) for h in heads], "first_tr": html[i:i + 500]}
+          show("Q_exdiv_20240613", quotes, "20240613", ["2330", "0050", "1101"])
+          show("Q_old_20160921", quotes, "20160921", ["2330", "0050"])
+          show("Q_holiday_20240101", quotes, "20240101", [])
+          show("EX_month", table, "exRight/TWT49U?startDate=20240701&endDate=20240731&response=json")
+          show("EX_year", table, "exRight/TWT49U?startDate=20240101&endDate=20241231&response=json")
+          show("EX_2016", table, "exRight/TWT49U?startDate=20160901&endDate=20161231&response=json")
+          show("REDUCE", table, "reduction/TWTAUU?startDate=20240101&endDate=20241231&response=json")
+          show("PAR", table, "change/TWTB8U?startDate=20200101&endDate=20241231&response=json")
+          show("CAL", table, "afterTrading/FMTQIK?date=20240101&response=json")
+          show("MOPS_2024_dom", mops, "t21sc03_113_1_0.html")
+          show("MOPS_2024_ky", mops, "t21sc03_113_1_1.html")
+          show("MOPS_2016_dom", mops, "t21sc03_105_9_0.html")
+          EOF
+          python3 /tmp/p.py
