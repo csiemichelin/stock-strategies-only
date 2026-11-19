@@ -1,0 +1,28 @@
+name: Data Source Check
+
+# 手動執行：確認 GitHub Actions 的機器連不連得上證交所／櫃買／公開資訊觀測站（策略實驗室的「當時名單」驗證要用，不花 FinMind 額度）
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reach TWSE / TPEx / MOPS
+        run: |
+          probe() {
+            code=$(curl -s -L -m 30 -A "Mozilla/5.0 (stock-strategies data check)" -o /tmp/out -w "%{http_code}" "$2")
+            echo "$1 http=$code bytes=$(wc -c < /tmp/out) head=$(head -c 420 /tmp/out | tr -d '\r\n' | iconv -f utf-8 -t utf-8 -c)"
+            sleep 3
+          }
+          probe twse_quotes_2024 "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=20240102&type=ALLBUT0999&response=json"
+          probe twse_quotes_2018 "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=20180102&type=ALLBUT0999&response=json"
+          probe twse_exright "https://www.twse.com.tw/rwd/zh/exRight/TWT49U?startDate=20240701&endDate=20240731&response=json"
+          probe tpex_quotes_2024 "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=2024/01/02&type=EW&response=json"
+          probe tpex_quotes_2018 "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=2018/01/02&type=EW&response=json"
+          probe twse_openapi_revenue "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
+          probe mops_revenue_2024 "https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_113_1_0.html"
