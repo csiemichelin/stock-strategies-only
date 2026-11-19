@@ -163,9 +163,9 @@ def test_report_end_to_end_on_synthetic_market(monkeypatch):
     monkeypatch.setattr(webstore, "save", lambda name, obj: saved.update({name: obj}))
     report = lab.run(_data(), eval_floor="2000-01-01")
     assert saved[lab.REPORT] is report and json.dumps(report)  # 純 JSON，存得進 webstore
-    assert [c["id"] for c in report["candidates"]] == ["v32", "v32_nobt", "revenue", "trend", "timing"]
+    assert [c["id"] for c in report["candidates"]] == ["v32", "v32_nobt", "revenue", "combo", "trend", "timing"]
     n_folds = len(report["benchmark"]["folds"])
-    assert report["trials"] == 15 and n_folds >= 2
+    assert report["trials"] == 19 and n_folds >= 2
     for c in report["candidates"]:
         assert c["verdict"] in ("strong", "tentative", "promising", "none") and len(c["folds"]) == n_folds
         assert c["curve"][0][0] >= report["period"]["start"] and 0 <= c["exposure_pct"] <= 100
@@ -275,3 +275,18 @@ def test_monthly_decision_days_are_days_you_can_recognise_on_the_day_itself():
     assert lab.mid_months(["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12"]) == ["2026-11-11"]  # 10 日有開盤：隔天
     assert lab.month_starts(october) == ["2026-10-01"]       # 月初第一個交易日（這時才確定 9/30 是上個月最後一天）
     assert lab.month_ends(october) == ["2026-09-30"]         # 最後一天是不是月底，要等下個月開盤才知道
+
+
+def test_combo_buys_revenue_leaders_only_when_price_is_above_its_half_year_average():
+    data = _data()
+    ranked = lab.plan_revenue(data, "yoy", 99)
+    combo = lab.plan_combo(data, "yoy", 3)
+    close = data.close[data.stocks]
+    above = close > close.rolling(120, min_periods=96).mean()
+    assert set(combo) == set(ranked) and any(combo.values())
+    dropped = 0
+    for d, picks in combo.items():
+        assert picks == [s for s in ranked[d] if above.at[d, s]][:3]   # 營收排名的順序不變，只是把跌破均線的拿掉
+        dropped += len([s for s in ranked[d][:3] if not above.at[d, s]])
+    assert dropped > 0                                                    # 真的有被濾掉的
+    assert lab._label("combo", ("accel", 10)) == "近3月÷近12月營收前 10 檔＋站上 120 日線"

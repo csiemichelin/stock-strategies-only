@@ -102,7 +102,8 @@ def test_build_keeps_delisted_stocks_and_restores_reference_price_changes(source
 def test_strategies_can_only_pick_from_the_list_of_that_time(source):
     data = pit.build()
     data.top = 4
-    plans = [lab.plan_trend(data, 60, 5), lab.plan_revenue(data, "yoy", 5), lab.plan_universe(data)]
+    plans = [lab.plan_trend(data, 60, 5), lab.plan_revenue(data, "yoy", 5), lab.plan_combo(data, "yoy", 5),
+             lab.plan_universe(data)]
     for plan in plans:
         assert any(plan.values())
         for d, picks in plan.items():
@@ -132,7 +133,7 @@ def test_run_reports_every_candidate_with_controls_and_current_picks(source, mon
     data = pit.build()
     report = pit.run(data)
     assert saved[pit.REPORT] is report
-    assert [c["id"] for c in report["candidates"]] == ["revenue", "trend"]
+    assert [c["id"] for c in report["candidates"]] == ["revenue", "combo", "trend"]
     assert report["top"] == 6 and report["universe"]["stocks"] == 6
     assert [o["top"] for o in report["universe"]["other_tops"]] == [4, 8]
     assert report["period"]["start"] >= "2022-04-30" and len(report["benchmark"]["folds"]) >= 4
