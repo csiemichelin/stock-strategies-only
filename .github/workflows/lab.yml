@@ -1,0 +1,51 @@
+name: Strategy Lab
+
+on:
+  schedule:
+    # 每週六台灣時間 08:20 檢查一次；上次驗證滿 25 天才真的重跑（等於每月一次），其餘幾秒就結束。
+    # 選週六是為了不佔用平日的 FinMind 額度（每小時 600 次）。
+    - cron: "20 0 * * 6"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "不管上次什麼時候跑過，現在就重新驗證"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strategy-lab
+  cancel-in-progress: false
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    # 第一次要抓 10 年股價、除權息、月營收、歷年財報（約 660 次 FinMind），額度不夠時會等下一個小時
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: uv sync
+
+      - name: Walk-forward validation
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            uv run python -m stock_strategies.lab
+          else
+            uv run python -m stock_strategies.lab --if-due 25
+          fi
