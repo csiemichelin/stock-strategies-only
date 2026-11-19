@@ -78,12 +78,13 @@ export type BacktestSide = {
   trades: number; win_rate: number | null; fees: number;
   avg_win_pct?: number | null; avg_loss_pct?: number | null; profit_factor?: number | null; avg_exposure_pct?: number;
 };
-export type BacktestRun = { strategy: { id: string; name: string }; result: BacktestSide; trades: SimTrade[]; skipped?: { stock_id: string; name: string; reason: string }[] };
+export type BacktestLogInfo = { reused: number; computed: number; pending?: string[]; deferred?: string[]; note?: string | null };
+export type BacktestRun = { strategy: { id: string; name: string }; result: BacktestSide; trades: SimTrade[]; skipped?: { stock_id: string; name: string; reason: string }[]; log?: BacktestLogInfo | null };
 export type BacktestResult = {
   strategy: { id: string; name: string } | null; capital: number; start_date: string; end_date: string; trading_days: number;
   result: BacktestSide | null; benchmark: Partial<BacktestSide> & { stock_id: string; name: string; available: boolean; shares?: number; error?: string };
   trades: SimTrade[]; finished_at?: string; skipped?: { stock_id: string; name: string; reason: string }[];
-  runs?: BacktestRun[]; request?: BacktestJob["params"];
+  runs?: BacktestRun[]; request?: BacktestJob["params"]; log?: BacktestLogInfo | null;
 };
 export type BacktestJob = {
   status: "idle" | "running" | "completed" | "failed" | "cancelled"; phase: string | null; completed: number; total: number | null;
@@ -157,7 +158,7 @@ export const api = {
   stopSim: (slot?: string) => jfetch<SimResponse>("/api/sim/stop", slot == null ? { method: "POST" } : { method: "POST", body: JSON.stringify({ slot }) }),
   removeSim: (slot: string) => jfetch<SimResponse>("/api/sim/remove", { method: "POST", body: JSON.stringify({ slot }) }),
   getBacktest: (signal?: AbortSignal) => jfetch<BacktestResponse>("/api/backtest", { signal }),
-  startBacktest: (strategy_ids: string[], include_daytrade: boolean, start_date: string, capital: number) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_ids, include_daytrade, start_date, capital }) }),
+  startBacktest: (strategy_ids: string[], include_daytrade: boolean, start_date: string, capital: number, recompute = false) => jfetch<BacktestResponse>("/api/backtest", { method: "POST", body: JSON.stringify({ strategy_ids, include_daytrade, start_date, capital, recompute }) }),
   cancelBacktest: () => jfetch<BacktestResponse>("/api/backtest/cancel", { method: "POST" }),
   latestRun: (signal?: AbortSignal) => jfetch<{ job: RunJob | null }>("/api/runs/latest", { signal }),
   finmindUsage: (signal?: AbortSignal) => jfetch<{ usage: FinMindUsage | null }>("/api/finmind/usage", { signal }),
