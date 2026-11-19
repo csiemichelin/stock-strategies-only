@@ -90,7 +90,7 @@ function Chart({ bench, cands }: { bench: LabSide; cands: LabCandidate[] }) {
   const x = (i: number) => L + (i / (n - 1)) * (W - L - R);
   const y = (v: number) => T + (1 - (Math.log(v) - Math.log(lo)) / ((Math.log(hi) - Math.log(lo)) || 1)) * (H - T - B);
   const years = bench.curve.map((p, i) => ({ year: p[0].slice(0, 4), i })).filter((p, k, a) => k > 0 && p.year !== a[k - 1].year);
-  const ticks = [lo, 100, hi].filter((v, i, a) => a.indexOf(v) === i);
+  const ticks = [12.5, 25, 50, 100, 200, 400, 800, 1600, 3200].filter(v => v === 100 || (v >= lo && v <= hi));
   return <div>
     <svg viewBox={"0 0 " + W + " " + H} className="w-full" role="img" aria-label="各策略與 0050 的樣本外累積績效">
       {ticks.map(v => <g key={v}><line x1={L} x2={W - R} y1={y(v)} y2={y(v)} stroke="#2a313c" strokeDasharray={v === 100 ? undefined : "3 3"} />
