@@ -729,6 +729,26 @@ def _could_buy(st: "_StockReplay", i: int, params: dict, fund_ok: bool) -> bool:
     return min(100, st.tscore[i] + bonus) >= params["min_tech_score_for_buy"]
 
 
+QUOTA_WAITER = None  # 網頁回測／回放會設定：額度不夠時等下一小時自動繼續（見 api.cloud.quota_waiter）
+
+
+def _fetch_with_quota(fn, sid, report, cancel):
+    """抓一檔資料：先確認額度；碰到額度用完就等額度恢復再重試（最多重試 3 次）。"""
+    from .cache import FinMindRateLimitError
+
+    for attempt in range(4):
+        if QUOTA_WAITER is not None:
+            QUOTA_WAITER(report, cancel, force=attempt > 0)
+        if cancel and cancel.is_set():
+            raise RuntimeError("已取消")
+        try:
+            return fn(sid)
+        except FinMindRateLimitError:
+            if QUOTA_WAITER is None or attempt == 3:
+                raise
+    return None
+
+
 def replay(capital: float, start_date: str, strategy: dict, *, progress=None, cancel=None,
            prune: bool = True) -> dict:
     """從 start_date 回放到最新交易日，回傳 state（status=running，之後接每日排程）。"""
@@ -753,11 +773,11 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
         sid, name = str(row["stock_id"]), row.get("name", "")
         report(completed=i, current=sid)
         try:
-            raw = _full_history(sid, years + 1)
-            if len(raw) < 100:
+            raw = _fetch_with_quota(lambda x: _full_history(x, years + 1), sid, report, cancel)
+            if raw is None or len(raw) < 100:
                 continue
             stocks.append(_StockReplay(sid, name, raw, params, years))
-            funds[sid] = get_fundamental(sid)
+            funds[sid] = _fetch_with_quota(get_fundamental, sid, report, cancel)
         except Exception as exc:
             skipped.append({"stock_id": sid, "name": name, "reason": str(exc)[:120]})
             print(f"[replay] {sid} 略過：{exc}", file=sys.stderr)
@@ -766,6 +786,8 @@ def replay(capital: float, start_date: str, strategy: dict, *, progress=None, ca
     if quota_skips and len(quota_skips) > 0.1 * max(1, len(watch)):
         raise RuntimeError(f"FinMind 免費額度用完（每小時 600 次），有 {len(quota_skips)} 檔資料抓不到，"
                            "結果會失真，請約一小時後再試，並避免和「開始選股」排在同一小時")
+    if QUOTA_WAITER is not None:
+        QUOTA_WAITER(report, cancel)
     idx = get_index_history("TAIEX")
     if idx is None or idx.empty or "date" not in idx.columns:
         raise RuntimeError("抓不到加權指數資料（多半是 FinMind 免費額度用完），請約一小時後再試")
