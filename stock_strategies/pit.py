@@ -324,7 +324,7 @@ def run(data: lab.Data | None = None, years: int = lab.YEARS, save: bool = True,
                                 "excess_cagr_pct": s["excess_cagr_pct"]} for top, run_ in others.items()]}
     report = {
         "generated_at": datetime.now(lab.TZ).isoformat(timespec="seconds"),
-        "period": {"start": oos[0], "end": oos[-1], "days": len(oos), "years": round(len(oos) / 252, 1),
+        "period": {"start": oos[0], "end": oos[-1], "days": len(oos), "years": round(lab.span_years(oos), 1),
                    "data_start": days[0]},
         "capital": lab.CAPITAL, "fold_months": lab.FOLD_MONTHS, "train_days": lab.TRAIN_DAYS,
         "top": TOP, "liquidity_days": LIQUIDITY_DAYS, "slip_pct": SLIP * 100,
@@ -392,11 +392,12 @@ def _verdict_line(c: dict) -> str:
 def line_message(report: dict, state: dict, v32_excess: float | None = None) -> tuple[str | None, dict]:
     """要不要多推一則「策略實驗室」的 LINE、內容是什麼。回傳（訊息或 None, 更新後的通知紀錄）。
     會推的時機：第一次、通過驗證的策略今天收盤後決定換股、每週最後一個交易日（週五）的摘要。
-    原本每天的選股訊息完全不受影響——這是另外多的一則。"""
+    沒通過驗證的策略只報模擬帳戶的成績，不報持股。原本每天的選股訊息完全不受影響——這是另外多的一則。"""
     tracking = report.get("tracking") or {}
     accounts = {a["id"]: a for a in tracking.get("accounts") or []}
     as_of = tracking.get("as_of") or report["period"]["end"]
     passed = [c for c in report["candidates"] if c["verdict"] != "none"]
+    verdicts = {c["id"]: c["verdict"] for c in report["candidates"]}
     told = dict(state.get("told") or {})
 
     def swap(a: dict) -> dict | None:  # 這個帳戶最近一次換股（還沒執行的優先）
@@ -406,28 +407,36 @@ def line_message(report: dict, state: dict, v32_excess: float | None = None) -> 
     first = not state.get("intro")  # 第一則是介紹：列出目前持股就好，不當成「換股通知」
     changes = [] if first else [c for c in passed if (a := accounts.get(c["id"])) and swap(a)
                                 and told.get(c["id"]) != a["decided"]]
+    revised = not first and state.get("verdicts") not in (None, verdicts)
     week = "%d-W%02d" % datetime.fromisoformat(as_of).isocalendar()[:2]
     weekly = datetime.fromisoformat(as_of).weekday() == 4 and state.get("week") != week
-    if not (first or changes or weekly):
+    if not (first or changes or revised or weekly):
         return None, state
     b = report["benchmark"]
     ahead = any(accounts[c["id"]]["next"] for c in changes)
-    lines = ["🔬 策略實驗室" + ("｜下個交易日開盤換股" if ahead else "｜換股通知" if changes
-                            else "｜每週摘要" if weekly and not first else ""),
-             f"用當時的名單重驗（樣本外 {report['period']['years']} 年，同期抱 0050 年化 {b['cagr_pct']}%）："]
-    lines.extend(_verdict_line(c) for c in report["candidates"])
-    if v32_excess is not None:
-        lines.append("・V3.2 現行策略（每日選股用的）：沒有足夠證據（每年"
-                     + (f"輸 0050 {abs(v32_excess)}" if v32_excess < 0 else f"贏 0050 {v32_excess}") + " 個百分點）")
-    if not passed:
-        lines.append("→ 目前沒有任何策略有足夠的樣本外證據贏過抱 0050。")
-    for c in passed or report["candidates"]:
+    lines = ["🔬 策略實驗室" + ("" if first else "｜下個交易日開盤換股" if ahead else "｜換股通知" if changes
+                            else "｜驗證結論有變" if revised else "｜每週摘要")]
+    v32 = "" if v32_excess is None else (f"每年輸 0050 {abs(v32_excess)}" if v32_excess < 0
+                                         else f"每年贏 0050 {v32_excess}") + " 個百分點"
+    if first or revised:
+        lines.append(f"用當時的名單重驗（樣本外 {report['period']['years']} 年，同期抱 0050 年化 {b['cagr_pct']}%）：")
+        lines.extend(_verdict_line(c) for c in report["candidates"])
+        if v32:
+            lines.append(f"・V3.2 現行策略（每日選股用的）：沒有足夠證據（{v32}）")
+        if not passed:
+            lines.append("→ 目前沒有任何策略有足夠的樣本外證據贏過抱 0050。")
+    else:
+        lines.append("驗證結論跟上次一樣："
+                     + ("、".join(f"{c['name']}{VERDICT_TEXT[c['verdict']]}" for c in passed) if passed
+                        else "沒有任何策略有足夠的樣本外證據贏過抱 0050")
+                     + (f"；V3.2 現行策略{v32}" if v32 else "") + "。")
+    for c in passed:
         a = accounts.get(c["id"])
         if not a:
             continue
         lines.append("")
-        lines.append(f"📌 {c['name']}（{a['config']}）" + ("" if passed else "｜未通過驗證，僅觀察"))
-        move = swap(a) if c in passed else None
+        lines.append(f"📌 {c['name']}（{a['config']}）")
+        move = swap(a)
         if move and a["next"]:
             lines.append(f"🔁 下一個交易日開盤換股（{a['decided']} 收盤後決定）")
             lines.append(f"賣出：{_names(move['sell'])}")
@@ -436,18 +445,28 @@ def line_message(report: dict, state: dict, v32_excess: float | None = None) -> 
                 lines.append(f"續抱：{_names(move['keep'])}")
         elif move and c in changes:  # 決定那天晚上沒通知到（例如當天資料抓不到），補通知
             lines.append(f"🔁 已照 {a['decided']} 的決定換股：賣出 {_names(move['sell'])}；買進 {_names(move['buy'])}")
-        if a["holdings"] and c in passed and not (move and a["next"]):
+        if a["holdings"] and not (move and a["next"]):
             lines.append(f"目前持股（{a['decided']} 決定）：{_names(a['holdings'])}")
         if a["days"]:
             lines.append(f"模擬帳戶 {a['since'][5:].replace('-', '/')} 起 {a['return_pct']:+}%（同期 0050 {a['bench_pct']:+}%）")
         elif a["since"] is None:
             lines.append("模擬帳戶從下一個交易日開盤開始記錄")
+    watch = [accounts[c["id"]] for c in report["candidates"] if c not in passed and c["id"] in accounts]
+    if watch:  # 沒通過驗證的：只看模擬帳戶之後的成績，不列持股
+        lines.append("")
+        running = [a for a in watch if a["days"]]
+        if running:
+            lines.append(f"觀察用的模擬帳戶（{running[0]['since'][5:].replace('-', '/')} 起；未通過驗證、不列持股）：")
+            lines.append("｜".join(f"{a['name']} {a['return_pct']:+}%" for a in running)
+                         + f"｜0050 {running[0]['bench_pct']:+}%")
+        else:
+            lines.append("沒通過驗證的策略也開了模擬帳戶觀察（下一個交易日開盤起算），每週回報成績、不列持股。")
     lines.append("")
     lines.append("以上是歷史驗證與模擬結果，不是投資建議；細節在網頁「策略實驗室」。")
     for c in passed:  # 這則訊息已經列出它們最新的持股
         if c["id"] in accounts:
             told[c["id"]] = accounts[c["id"]]["decided"]
-    new_state = {**state, "intro": True, "told": told}
+    new_state = {**state, "intro": True, "told": told, "verdicts": verdicts}
     if weekly:
         new_state["week"] = week
     return "\n".join(lines), new_state

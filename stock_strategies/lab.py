@@ -372,12 +372,20 @@ def _load_data(years: int, watch: list[dict] | None) -> Data:
 # ---------------------------------------------------------------- 引擎
 
 
+def span_years(dates) -> float:
+    """這段期間是幾年——用日曆天算。台股一年大約 243 個交易日，用「交易日 ÷ 252」會把年數算少、年化報酬算高。"""
+    if len(dates) < 2:
+        return max(len(dates) / 252, 1e-9)
+    days = (pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days + 1
+    return max(days / 365.25, 1e-9)
+
+
 def _result(dates: list, equity: list, exposure: list, trades: int, costs: float, capital: float) -> dict:
     eq = pd.Series(equity, index=dates, dtype=float)
     ret = eq.pct_change()
     if len(ret):
         ret.iloc[0] = eq.iloc[0] / capital - 1
-    years = max(len(dates) / 252, 1e-9)
+    years = span_years(dates)
     return {"ret": ret, "exposure": pd.Series(exposure, index=dates, dtype=float),
             "trades_per_year": round(trades / years, 1),
             "cost_pct_per_year": round(costs / (float(eq.mean()) or 1.0) / years * 100, 2)}
@@ -636,7 +644,7 @@ def walk_forward(runs: dict, fold_days: list[list[str]], all_days: list[str],
 
 def _stats(ret: pd.Series, bench: pd.Series, fold_days: list[list[str]]) -> dict:
     eq = (1 + ret).cumprod()
-    years = max(len(ret) / 252, 1e-9)
+    years = span_years(list(ret.index))
     total, b_total = float(eq.iloc[-1]), float((1 + bench).prod())
     cagr = (total ** (1 / years) - 1) * 100 if total > 0 else -100.0
     b_cagr = (b_total ** (1 / years) - 1) * 100 if b_total > 0 else -100.0
@@ -750,7 +758,7 @@ def run(data: Data | None = None, years: int = YEARS, save: bool = True, eval_fl
     u_stats = _stats(u_ret, b_ret, fold_days)
     report = {
         "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
-        "period": {"start": oos[0], "end": oos[-1], "days": len(oos), "years": round(len(oos) / 252, 1),
+        "period": {"start": oos[0], "end": oos[-1], "days": len(oos), "years": round(span_years(oos), 1),
                    "data_start": days[0]},
         "capital": CAPITAL, "fold_months": FOLD_MONTHS, "train_days": TRAIN_DAYS,
         "trials": sum(c["configs"] for c in out),
