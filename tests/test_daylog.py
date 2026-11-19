@@ -1,4 +1,6 @@
 """回測逐日紀錄：算過的交易日不重算、不重抓資料；每日排程補最新一天。"""
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -98,6 +100,8 @@ def test_other_strategy_params_do_not_share_signals(world):
     assert daylog.strategy_key({"params": {"hold_days": 20.0}}) == daylog.strategy_key({"params": {"hold_days": 20}})
     state = sim.replay(10_000, start, other)
     assert state["log_info"]["computed"] == 61 and state["log_info"]["reused"] == 0
+    kinds = [json.loads(line)[0] for line in daylog._local_path().read_text(encoding="utf-8").splitlines()]
+    assert kinds.count("bars") == 61 and kinds.count("sig") == 122  # K 棒兩個策略共用，只記一份
 
 
 def test_incomplete_latest_day_is_not_logged(world):
