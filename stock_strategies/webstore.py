@@ -71,9 +71,10 @@ def save(name: str, obj) -> None:
         ws.update(range_name=f"A{row}:{_col(len(values))}{row}", values=[values], value_input_option="RAW")
 
 
-def load(name: str):
+def load(name: str, fresh: bool = False):
+    """fresh=True：不用這個行程記住的版本，重新讀一次（別台機器可能剛寫過）。"""
     with _lock:
-        if name in _memory:
+        if name in _memory and not fresh:
             return _memory[name]
         if not _use_sheet():
             p = _local(name)
@@ -82,6 +83,7 @@ def load(name: str):
             ws = _worksheet()
             names = ws.col_values(1)
             if name not in names:
+                _memory.pop(name, None)
                 return None
             row = ws.row_values(names.index(name) + 1)
             text = "".join(row[2:])

@@ -150,7 +150,15 @@ def _read_cache(dataset: str, data_id: str) -> pd.DataFrame | None:
         return None
 
 
-def _write_cache(dataset: str, data_id: str, df: pd.DataFrame) -> None:
+def read_meta(dataset: str, data_id: str) -> dict:
+    try:
+        return json.loads(_meta_path(dataset, data_id).read_text())
+    except Exception:  # noqa: BLE001 沒有或壞掉都當沒有
+        return {}
+
+
+def _write_cache(dataset: str, data_id: str, df: pd.DataFrame, since: str | None = None) -> None:
+    """since：這份快取是從哪一天開始完整抓的（新上市的股票 min_date 很晚，但其實已經抓到底了）。"""
     p = cache_path(dataset, data_id)
     p.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(p, index=False)
@@ -159,6 +167,7 @@ def _write_cache(dataset: str, data_id: str, df: pd.DataFrame) -> None:
         "min_date": str(df["date"].min()) if "date" in df and len(df) else None,
         "max_date": str(df["date"].max()) if "date" in df and len(df) else None,
         "rows": int(len(df)),
+        "since": since,
     }
     _meta_path(dataset, data_id).write_text(json.dumps(meta))
 
@@ -231,9 +240,11 @@ def fetch_finmind_cached(
         }
         # 增量：有舊快取（已含早期全歷史）則只抓 max_date-7d 之後，concat 去重補上新資料。
         # 不可用 min(start_date, inc_start)：當 start_date 早於 cache 時會退回全量重抓，增量失效。
+        since = start_date  # 全量抓：從 start_date 起都有了
         if cached is not None and len(cached) and "date" in cached.columns:
             inc_start = (cached["date"].max() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
             params["start_date"] = inc_start
+            since = read_meta(dataset, data_id).get("since")  # 增量：沿用原本的起點
         payload = _rate_limited_get(params, timeout=timeout, max_retries=max_retries)
         fresh = _api_to_df(payload)
         if cached is not None and len(cached):
@@ -245,9 +256,9 @@ def fetch_finmind_cached(
             df = fresh
         df = df.reset_index(drop=True)
         if len(df):
-            _write_cache(dataset, data_id, df)
+            _write_cache(dataset, data_id, df, since)
         elif _freq_of(dataset) != "daily":
-            _write_cache(dataset, data_id, df)  # 記住「這檔沒有這種資料」，幾天內不再問
+            _write_cache(dataset, data_id, df, since)  # 記住「這檔沒有這種資料」，幾天內不再問
 
     # 切片
     if "date" in df.columns and len(df):

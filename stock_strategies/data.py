@@ -70,9 +70,19 @@ def get_price_history(stock_id: str, years: int = 3) -> pd.DataFrame:
 
 
 def get_fundamental(stock_id: str) -> dict:
-    """近 3 完整年度 EPS、ROE。
+    """近 3 完整年度 EPS、ROE。先看共用快照（fundstore，7 天內有效、所有機器共用），沒有才問 FinMind（2 次）。"""
+    from . import fundstore
 
-    EPS = 該年單季 EPS 加總（年度）。
+    snap = fundstore.get(stock_id)
+    if snap is not None:
+        return snap
+    fund = _fundamental_from_finmind(stock_id)
+    fundstore.put(stock_id, fund)
+    return fund
+
+
+def _fundamental_from_finmind(stock_id: str) -> dict:
+    """EPS = 該年單季 EPS 加總（年度）。
     ROE = 年度淨利 / 年底歸屬母公司權益 × 100——FinMind 財報無 ROE 欄，故自算。
     """
     start = f"{datetime.now().year - 4}-01-01"
