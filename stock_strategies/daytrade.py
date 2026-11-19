@@ -282,6 +282,8 @@ class SymbolState:
     or_done: bool = False
     tick_count: int = 0
     vols: list = field(default_factory=list)        # (ts, volume)
+    auction_volume: float = 0.0                      # 09:00 開盤集合競價那一筆（量特別大，不算進平均）
+    prev_pace: float = 0.0                           # 前一天平均每 3 分鐘成交張數（前一天量 ÷ 90）
     touched_vwap: bool = False
     pullback_low: float = math.inf
     entered: bool = False
@@ -292,7 +294,9 @@ class SymbolState:
         return self.cum_amount / self.cum_volume if self.cum_volume else 0.0
 
     def avg_tick_volume(self) -> float:
-        return self.cum_volume / self.tick_count if self.tick_count else 0.0
+        """平均每筆成交量（不含開盤集合競價那一筆，否則平均被灌高，突破量永遠達不到 2 倍）。"""
+        n = self.tick_count - (1 if self.auction_volume else 0)
+        return (self.cum_volume - self.auction_volume) / n if n > 0 else 0.0
 
     def volume_between(self, start: datetime, end: datetime) -> float:
         return sum(v for t, v in self.vols if start <= t < end)
@@ -301,9 +305,12 @@ class SymbolState:
 class IntradayEngine:
     """逐筆餵入成交，吐出進出場訊號。不下單，下單由呼叫端（本機程式／回測）處理。"""
 
-    def __init__(self, symbols: list[str], p: dict):
+    def __init__(self, symbols: list[str], p: dict, prev_volume_lots: dict[str, float] | None = None):
         self.p = p
         self.states = {s: SymbolState(s) for s in symbols}
+        for s, v in (prev_volume_lots or {}).items():
+            if s in self.states and v:
+                self.states[s].prev_pace = float(v) / 90
         self.or_end, self.entry_end = _hm(p["opening_range_end"]), _hm(p["entry_end"])
         self.force_close = _hm(p["force_close"])
         self.trades_today = 0
@@ -319,6 +326,8 @@ class IntradayEngine:
             return []
         now = t.ts.time()
         if t.volume > 0:
+            if st.tick_count == 0 and now >= time(9, 0):
+                st.auction_volume = t.volume
             st.cum_amount += t.price * t.volume
             st.cum_volume += t.volume
             st.tick_count += 1
@@ -345,10 +354,18 @@ class IntradayEngine:
     def _entry_signal(self, st: SymbolState, t: Tick) -> Signal | None:
         p, vwap = self.p, st.vwap
         avg = st.avg_tick_volume()
-        # 模式 A：帶量突破開盤區間高點，且五檔委買 > 委賣
-        if st.or_high and t.price > st.or_high and t.volume >= p["breakout_volume_mult"] * max(avg, 1e-9) \
-                and t.bid_sum > t.ask_sum:
-            return Signal("entry", st.symbol, t.price, f"突破開盤 3 分鐘高點 {st.or_high:g}（量 {t.volume:g} 張）", "A")
+        # 模式 A：帶量突破開盤區間高點，且五檔委買 > 委賣。
+        # 「帶量」＝最近 3 分鐘成交量 ≥ 前一天平均每 3 分鐘量 × 倍數（沒有前一天量才退回「單筆 ≥ 平均每筆 × 倍數」）
+        if st.or_high and t.price > st.or_high and t.bid_sum > t.ask_sum:
+            from datetime import timedelta
+
+            if st.prev_pace:
+                vol3 = st.volume_between(t.ts - timedelta(seconds=180), t.ts + timedelta(microseconds=1))
+                heavy, desc = vol3 >= p["breakout_volume_mult"] * st.prev_pace, f"3 分鐘量 {vol3:,.0f} 張＝昨日均速 {vol3 / st.prev_pace:.1f} 倍"
+            else:
+                heavy, desc = t.volume >= p["breakout_volume_mult"] * max(avg, 1e-9), f"量 {t.volume:g} 張"
+            if heavy:
+                return Signal("entry", st.symbol, t.price, f"突破開盤 3 分鐘高點 {st.or_high:g}（{desc}）", "A")
         # 模式 B：回測分時均價線不破 → 量縮 → 大單敲進
         if vwap:
             near = t.price <= vwap * (1 + p["vwap_touch_pct"] / 100)
