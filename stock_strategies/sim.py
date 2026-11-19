@@ -796,7 +796,7 @@ def _append_quietly(entries: list) -> None:
 
 
 def _compute_days(strategy: dict, params: dict, key: str, todo: list[str], idx, *, report, cancel,
-                  prune: bool, save: bool) -> tuple[dict, list, list]:
+                  prune: bool, save: bool, known_bars: dict | None = None) -> tuple[dict, list, list]:
     """下載歷史資料，照 todo 的順序算出這些交易日的 K 棒與 BUY 訊號（跟每日選股同一套 evaluate）。
     資料完整的日子寫進回測紀錄；最新一天若還有不少股票沒更新，這次先不算、也不記，下次再補。"""
     from . import daylog, fundstore
@@ -875,7 +875,11 @@ def _compute_days(strategy: dict, params: dict, key: str, todo: list[str], idx, 
         buys = [{k: r.get(k) for k in daylog.SIG_FIELDS} for r in signals if r.get("action") == "BUY"]
         computed[day] = {"buys": buys, "bars": bars}
         if loggable:
-            batch += [("bars", "", day, bars), ("sig", key, day, {"buys": buys, "n": len(bars)})]
+            have = (known_bars or {}).get(day) or {}
+            fresh_bars = {k: v for k, v in bars.items() if k not in have}  # K 棒所有策略共用，別的策略記過就不重寫
+            if fresh_bars:
+                batch.append(("bars", "", day, fresh_bars))
+            batch.append(("sig", key, day, {"buys": buys, "n": len(bars)}))
             if len(batch) >= 40:  # 分批寫，中途被取消或當機也保住已算好的日子
                 _append_quietly(batch)
                 batch = []
@@ -967,7 +971,8 @@ def ensure_logged(strategy: dict, start_date: str, *, progress=None, cancel=None
     computed, skipped, pending = {}, [], []
     if todo:
         computed, skipped, pending = _compute_days(strategy, params, key, _todo_order(todo, done), idx,
-                                                   report=report, cancel=cancel, prune=prune, save=use_log)
+                                                   report=report, cancel=cancel, prune=prune, save=use_log,
+                                                   known_bars=log.bars)
     ok = [d for d in days if d in computed or d in done]
     return plan(ok, computed, skipped, pending, deferred)
 
