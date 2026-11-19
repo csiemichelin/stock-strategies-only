@@ -9,7 +9,7 @@ def test_get_price_history_uses_cache(monkeypatch):
         "close": [10.2, 11.2], "Trading_Volume": [1000, 1100],
     })
     monkeypatch.setattr(data, "fetch_finmind_cached", lambda *a, **k: raw.copy())
-    df = data.get_price_history("2330", years=1)
+    df = data.get_price_history("2330", years=3)  # 快取抓 5 年，回傳時切成要求的年數
     assert {"date", "open", "high", "low", "close", "volume"}.issubset(df.columns)
     assert df.iloc[1]["high"] == 11.5    # max→high
     assert df.iloc[1]["volume"] == 1100  # Trading_Volume→volume
