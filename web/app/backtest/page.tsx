@@ -130,6 +130,7 @@ function Progress({ job, onChange }: { job: BacktestJob; onChange: () => void })
       <h2 className="font-medium">回測中{p ? `：${p.strategy_name}・${p.start_date} 起・本金 ${money(p.capital)}` : ""}</h2>
       <button className="btn-ghost" disabled={busy} onClick={async () => { setBusy(true); try { await api.cancelBacktest(); } finally { setBusy(false); onChange(); } }}>取消</button>
     </div>
+    {p?.quota_note && <p className="text-sm text-amber-600">{p.quota_note}</p>}
     <div className="flex justify-between text-sm"><span>{job.phase}{job.current ? `：${job.current}` : "…"}</span><span className="font-mono text-muted">{job.completed} / {job.total ?? "—"}</span></div>
     <progress className="h-1.5 w-full" max={job.total || 1} value={job.total ? job.completed : undefined} />
     <p className="text-xs text-muted">先下載每檔股票的歷史資料，再逐日回放。所有裝置都看得到這個進度。</p>
