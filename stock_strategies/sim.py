@@ -680,6 +680,37 @@ def _full_history(stock_id: str, years: int):
     return raw
 
 
+def estimate_finmind_calls(years: int, stock_ids: list[str] | None = None) -> dict:
+    """回放大概要打幾次 FinMind：看快取裡哪些股票的股價／財報今天還沒抓過、歷史不夠長。
+    今天已經用網頁選過股（同一台主機）的話，通常只剩幾次。"""
+    import json as _json
+
+    import pandas as pd
+
+    from .cache import _is_fresh, _meta_path
+    from .sheet import read_watchlist
+
+    ids = stock_ids if stock_ids is not None else [str(r["stock_id"]) for r in read_watchlist()]
+    need = (datetime.now() - timedelta(days=365 * years + 60 - 20)).strftime("%Y-%m-%d")
+    price = fin = 0
+    for sid in ids:
+        mp = _meta_path("TaiwanStockPrice", sid)
+        try:
+            meta = _json.loads(mp.read_text()) if mp.exists() else {}
+        except Exception:  # noqa: BLE001
+            meta = {}
+        deep_enough = str(meta.get("min_date") or "9999")[:10] <= need
+        if not (deep_enough and _is_fresh("TaiwanStockPrice", sid, None)):
+            price += 1  # 不夠新就增量補、不夠長就重抓 5 年，都是一次
+        for ds in ("TaiwanStockFinancialStatements", "TaiwanStockBalanceSheet"):
+            if not _is_fresh(ds, sid, None):
+                fin += 1
+    index = 0 if _is_fresh("TaiwanStockPrice", "TAIEX", None) else 1
+    total = price + fin + index
+    return {"total": total, "price": price, "fundamental": fin, "index": index, "stocks": len(ids),
+            "checked_at": pd.Timestamp.now(tz="Asia/Taipei").isoformat(timespec="seconds")}
+
+
 _MAX_VOLUME_BONUS = 10 + 8 + 5 + 8  # volume.detect_patterns 所有加分項的總和（上限）
 
 

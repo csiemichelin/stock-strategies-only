@@ -51,9 +51,15 @@ def fetch_finmind(
     return pd.DataFrame()
 
 
+PRICE_CACHE_YEARS = 5  # 第一次抓就抓 5 年（FinMind 依「次數」計額度，多抓幾年不多花），回測就不必再重抓
+
+
 def get_price_history(stock_id: str, years: int = 3) -> pd.DataFrame:
     start = (datetime.now() - timedelta(days=365 * years + 60)).strftime("%Y-%m-%d")
-    df = fetch_finmind_cached("TaiwanStockPrice", stock_id, start)
+    deep = (datetime.now() - timedelta(days=365 * max(years, PRICE_CACHE_YEARS) + 60)).strftime("%Y-%m-%d")
+    df = fetch_finmind_cached("TaiwanStockPrice", stock_id, deep)
+    if not df.empty and "date" in df.columns:
+        df = df[df["date"] >= pd.to_datetime(start)]
     if df.empty:
         return df
     df = df.rename(columns={"max": "high", "min": "low", "Trading_Volume": "volume"})
