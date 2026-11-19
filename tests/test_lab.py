@@ -107,6 +107,16 @@ def test_simulate_trades_next_open_and_charges_costs():
     assert final == pytest.approx(100_000 * (1 - 0.00585), rel=2e-4)         # 價格沒動，只虧手續費×2＋證交稅
 
 
+def test_days_without_trades_do_not_fake_momentum():
+    days = list(pd.bdate_range("2026-01-05", periods=4).strftime("%Y-%m-%d"))
+    quiet = pd.DataFrame({"date": days, "open": [50.0, 0.0, 51.0, 52.0], "high": 52.0, "low": 50.0,
+                          "close": [50.0, 0.0, 51.0, 52.0], "volume": 1.0})  # 第 2 天沒成交，價格是 0
+    data = lab.Data({"2330": quiet, "0050": quiet.copy()}, pd.Series(100.0, index=days), {})
+    assert data.close["2330"].tolist() == [50.0, 50.0, 51.0, 52.0]  # 沿用前一天收盤，不會算出無限大的漲幅
+    res = lab.simulate(data, {days[0]: ["2330"]}, days[0], days[-1], slots=1, capital=10_000)
+    assert res["exposure"].iloc[1] == 0 and res["exposure"].iloc[2] == 0  # 開盤價 0 的那天買不到（這次換股就不買了）
+
+
 def test_verdict_rules():
     base = {"folds": [{}] * 10}
     assert lab._verdict({**base, "excess_cagr_pct": 5, "t_stat": 3.2, "win_folds": 7}) == "strong"
@@ -175,3 +185,20 @@ def test_if_due_skips_when_last_report_is_recent(monkeypatch):
     webstore.save(lab.REPORT, {"generated_at": pd.Timestamp.now(tz="Asia/Taipei").isoformat()})
     monkeypatch.setattr(lab, "run", lambda **kw: pytest.fail("不該重跑"))
     assert lab.main(["--if-due", "25"]) == 0
+
+
+def test_api_serves_latest_report():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api import backtest_api
+    from stock_strategies import webstore
+
+    backtest_api._lab.update(at=0.0, report=None)
+    app = FastAPI()
+    backtest_api.install(app)
+    client = TestClient(app)
+    assert client.get("/api/lab").json() == {"report": None}  # 還沒跑過
+    webstore.save(lab.REPORT, {"generated_at": "2026-11-20T08:00:00+08:00", "candidates": []})
+    backtest_api._lab["at"] = 0.0
+    assert client.get("/api/lab").json()["report"]["generated_at"].startswith("2026-11-20")
