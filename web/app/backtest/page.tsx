@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, BacktestJob, BacktestResult, BacktestSide, CurvePoint, DaytradeBacktest, DaytradeCommand, errorMessage, SimTrade, Strategy } from "@/lib/api";
+import { api, BacktestJob, BacktestResult, BacktestRun, BacktestSide, CurvePoint, DaytradeBacktest, DaytradeCommand, errorMessage, SimTrade, Strategy } from "@/lib/api";
 import { ErrorCard, Skeleton } from "@/components/Feedback";
 import { readCache, writeCache } from "@/lib/cache";
 import QuotaStatus from "@/components/QuotaStatus";
@@ -75,6 +75,7 @@ function RunForm({ onStarted, lastJob }: { onStarted: () => void; lastJob: Backt
   const [preset, setPreset] = useState("6m");
   const [custom, setCustom] = useState(isoDaysAgo(120));
   const [capital, setCapital] = useState(10000);
+  const [recompute, setRecompute] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { api.listStrategies().then(d => setStrategies(d.strategies.filter(s => !s.error))).catch(() => {}); }, []);
@@ -85,7 +86,7 @@ function RunForm({ onStarted, lastJob }: { onStarted: () => void; lastJob: Backt
   const nothing = !picked.length && !withDaytrade;
   async function run() {
     setBusy(true); setError(null);
-    try { await api.startBacktest(picked, withDaytrade, start, capital); onStarted(); }
+    try { await api.startBacktest(picked, withDaytrade, start, capital, recompute); onStarted(); }
     catch (err) { setError(errorMessage(err)); } finally { setBusy(false); }
   }
   return <section className="card space-y-5">
@@ -97,7 +98,7 @@ function RunForm({ onStarted, lastJob }: { onStarted: () => void; lastJob: Backt
       </div>
       <p className="mt-2 text-xs text-muted">{preset === "custom"
         ? <span className="flex flex-wrap items-center gap-2">從 <input type="date" className="input w-auto py-1" value={custom} min={isoDaysAgo(365)} max={isoDaysAgo(7)} onChange={e => setCustom(e.target.value)} /> 到最新交易日（最長一年）</span>
-        : <>從 {start} 到最新交易日・每個策略預估 {chosen.eta}</>}</p>
+        : <>從 {start} 到最新交易日・第一次每個策略預估 {chosen.eta}，算過的交易日會記下來，之後只要幾秒</>}</p>
     </div>
     <fieldset><legend className="label">策略（可複選，一次最多 {MAX_PICK} 個，都會和抱 0050 並排比較）</legend>
       <div className="mt-2 flex flex-wrap gap-2">
@@ -117,7 +118,10 @@ function RunForm({ onStarted, lastJob }: { onStarted: () => void; lastJob: Backt
       <span className="text-xs text-muted">{nothing ? "請至少勾一個策略" : "在背景跑，可以關掉頁面或換裝置，回來會看到結果。"}</span>
       {lastJob?.status === "failed" && <span className="text-xs text-red-300">上次回測失敗：{lastJob.error?.replace(/^\w+(Error|Exception): /, "")}</span>}
     </div>
-    {picked.length > 0 && <QuotaStatus need="第一次回測約需 300–500 次，之後同一天、第二個策略都會少很多" />}
+    {picked.length > 0 && <label className="flex items-center gap-2 text-xs text-muted">
+      <input type="checkbox" className="accent-blue-400" checked={recompute} onChange={e => setRecompute(e.target.checked)} />
+      不沿用之前的回測紀錄，全部重算（觀察清單改過才需要，會多花 FinMind 額度）</label>}
+    {picked.length > 0 && <QuotaStatus need="同一組策略參數第一次回測約需 130–400 次；算過的交易日會記下來，之後回測只讀紀錄、不花額度（最新一天由每日排程補上）" />}
     {error && <ErrorCard message={error} />}
   </section>;
 }
@@ -157,7 +161,7 @@ function daytradeColumn(result: BacktestResult, dt: { backtest: DaytradeBacktest
 
 function Report({ result, stale, daytrade }: { result: BacktestResult; stale: boolean; daytrade: { backtest: DaytradeBacktest | null; commands: DaytradeCommand[]; agentAt?: string | null } | null }) {
   const b = result.benchmark;
-  const runs = result.runs ?? (result.result && result.strategy ? [{ strategy: result.strategy, result: result.result, trades: result.trades, skipped: result.skipped }] : []);
+  const runs: BacktestRun[] = result.runs ?? (result.result && result.strategy ? [{ strategy: result.strategy, result: result.result, trades: result.trades, skipped: result.skipped, log: result.log }] : []);
   const dtCol = daytradeColumn(result, daytrade);
   const cols: Col[] = [
     ...runs.map((r, i) => ({ key: r.strategy.id, name: r.strategy.name, color: runs.length === 1 ? COLORS.strategy : PALETTE[i % PALETTE.length], side: r.result, trades: r.trades })),
@@ -186,6 +190,10 @@ function Report({ result, stale, daytrade }: { result: BacktestResult; stale: bo
       <h2 className="text-lg font-medium">{stale ? "上一次的結果" : "回測結果"}：{title}</h2>
       <span className="text-sm text-muted">{result.start_date} ～ {result.end_date}・{result.trading_days} 個交易日・本金 {money(result.capital)}</span>
     </div>
+    {runs.some(r => r.log) && <p className="text-xs leading-5 text-muted">回測紀錄：{runs.filter(r => r.log).map(r => {
+      const g = r.log!; const later = [...(g.deferred || []), ...(g.pending || [])];
+      return `${runs.length > 1 ? `${r.strategy.name} ` : ""}沿用 ${g.reused} 個交易日、這次新算 ${g.computed} 個${later.length ? `（${later.join("、")} 還沒納入，每日排程補上後自動算進來，不另外花額度）` : ""}${g.note ? `（${g.note}）` : ""}`;
+    }).join("；")}</p>}
     {!!skipped.length && <div className="rounded-xl border border-watch/30 bg-watch/5 p-4 text-sm leading-6">
       ⚠️ 有 {skipped.length} 檔沒抓到資料、沒放進回測（{skipped.slice(0, 6).map(x => x.stock_id).join("、")}{skipped.length > 6 ? "…" : ""}）。
       {skipped.some(x => /額度|限流/.test(x.reason)) ? "原因是 FinMind 免費額度（每小時 600 次）用完，約一小時後重跑，並避免同時按「開始選股」。" : `原因：${skipped[0].reason}`}
