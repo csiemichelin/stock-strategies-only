@@ -197,13 +197,13 @@ def test_line_message_is_sent_on_first_run_rebalance_days_and_fridays_only():
     text, state = pit.line_message(_report(as_of="2026-11-11", changed=moved), {})
     assert "策略實驗室" in text and "初步有證據" in text and "2330 台積電" in text and "不是投資建議" in text
     assert text.splitlines()[0] == "🔬 策略實驗室" and "已照" not in text  # 第一則是介紹，不當成換股通知
+    assert "每年贏 0050 5.0 個百分點、贏當時名單 4.0；14 段贏 9 段、t 值 2.3" in text
     assert pit.line_message(quiet, state) == (None, state)            # 第二次就不重複推
     swap = {"sell": [{"id": "2330", "name": "台積電"}], "keep": [], "buy": [{"id": "2317", "name": "鴻海"}]}
     state = {**state, "told": {"revenue": "2026-10-12"}}
     text, told = pit.line_message(_report(nxt=swap), state, v32_excess=-18.9)
     assert "換股" in text.splitlines()[0] and "賣出：2330 台積電" in text and "買進：2317 鴻海" in text
-    assert "V3.2" in text and "每年輸 0050 18.9 個百分點" in text
-    assert "每年贏 0050 5.0 個百分點、贏當時名單 4.0；14 段贏 9 段、t 值 2.3" in text
+    assert "驗證結論跟上次一樣：月營收動能初步有證據；V3.2 現行策略每年輸 0050 18.9 個百分點。" in text
     assert pit.line_message(_report(nxt=swap), told)[0] is None       # 同一次換股只通知一次
     text, weekly = pit.line_message(_report(as_of="2026-11-13"), told)  # 週五
     assert "每週摘要" in text.splitlines()[0] and "模擬帳戶 11/02 起 +1.5%（同期 0050 +0.7%）" in text
@@ -212,15 +212,28 @@ def test_line_message_is_sent_on_first_run_rebalance_days_and_fridays_only():
 
 def test_line_message_never_pushes_picks_of_an_unvalidated_strategy():
     swap = {"sell": [], "keep": [], "buy": [{"id": "2317", "name": "鴻海"}]}
-    text, state = pit.line_message(_report("none", swap), {})
-    assert "沒有任何策略有足夠的樣本外證據" in text and "未通過驗證，僅觀察" in text
+    text, state = pit.line_message(_report("none", swap), {}, v32_excess=-18.84)
+    assert "→ 目前沒有任何策略有足夠的樣本外證據贏過抱 0050。" in text
     # 數字比 0050 高但沒通過：要講清楚為什麼不算數
     assert "比 0050 多 5.0 個百分點，但不穩定：14 段只贏 7 段、t 值 0.8（要 2 以上）、最大回撤 -58.9%" in text
+    assert "V3.2 現行策略（每日選股用的）：沒有足夠證據（每年輸 0050 18.84 個百分點）" in text
+    assert "觀察用的模擬帳戶（11/02 起；未通過驗證、不列持股）：" in text and "月營收動能 +1.5%｜0050 +0.7%" in text
+    assert "鴻海" not in text and "台積電" not in text               # 沒通過驗證：只報成績，不報持股與換股
+    assert pit.line_message(_report("none", swap), state)[0] is None  # 也不會因為它換股就推播
     loser = _report("none")
     loser["candidates"][0]["excess_cagr_pct"] = -4.97
     assert "每年輸 0050 4.97 個百分點" in pit.line_message(loser, {})[0]
-    assert "鴻海" not in text and "台積電" not in text               # 沒通過驗證：只報成績，不報持股與換股
-    assert pit.line_message(_report("none", swap), state)[0] is None  # 也不會因為它換股就推播
+    text, _ = pit.line_message(_report("none", as_of="2026-11-13"), state, v32_excess=-18.84)  # 之後每週五：只講重點
+    assert text.splitlines()[:2] == ["🔬 策略實驗室｜每週摘要", "驗證結論跟上次一樣：沒有任何策略有足夠的樣本外證據贏過抱 0050；"
+                                     "V3.2 現行策略每年輸 0050 18.84 個百分點。"]
+    assert "月營收動能 +1.5%｜0050 +0.7%" in text and len(text.splitlines()) == 7
+
+
+def test_line_message_announces_a_changed_verdict_in_full():
+    _, state = pit.line_message(_report("none"), {})
+    text, new = pit.line_message(_report("tentative"), state)           # 重新驗證後通過了
+    assert text.splitlines()[0] == "🔬 策略實驗室｜驗證結論有變" and "初步有證據" in text and "目前持股" in text
+    assert new["verdicts"] == {"revenue": "tentative"} and pit.line_message(_report("tentative"), new)[0] is None
 
 
 def test_a_rebalance_that_was_not_announced_in_time_is_announced_afterwards():

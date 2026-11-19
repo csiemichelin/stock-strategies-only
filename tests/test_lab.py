@@ -290,3 +290,12 @@ def test_combo_buys_revenue_leaders_only_when_price_is_above_its_half_year_avera
         dropped += len([s for s in ranked[d][:3] if not above.at[d, s]])
     assert dropped > 0                                                    # 真的有被濾掉的
     assert lab._label("combo", ("accel", 10)) == "近3月÷近12月營收前 10 檔＋站上 120 日線"
+
+
+def test_annualised_return_uses_calendar_time_not_252_trading_days():
+    """台股一年大約 243 個交易日：一年賺 10% 就是年化 10%，不能因為除以 252 變成 10.4%。"""
+    days = list(pd.date_range("2025-01-02", "2026-01-01", periods=243).strftime("%Y-%m-%d"))
+    ret = pd.Series(1.10 ** (1 / 243) - 1, index=days)
+    stats = lab._stats(ret, ret, [days])
+    assert stats["cagr_pct"] == pytest.approx(10.0, abs=0.05) and stats["excess_cagr_pct"] == 0
+    assert lab.span_years(days) == pytest.approx(1.0, abs=0.01) and lab.span_years(days[:1]) > 0
