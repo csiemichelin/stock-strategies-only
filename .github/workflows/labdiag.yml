@@ -26,7 +26,7 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
         run: |
-          cat > /tmp/d.py <<'EOF'
+          cat > labdiag_tmp.py <<'EOF'
           import numpy as np
           import pandas as pd
           from stock_strategies import lab, pit, twse
@@ -72,4 +72,4 @@ jobs:
           print("D 0050 drawdown now%", round(float(eb.iloc[-1] / eb.cummax().iloc[-1] - 1) * 100, 2), "peak date", str(eb.idxmax()))
           print("D taiex", [[d, float(data.index[d])] for d in days[-4:]])
           EOF
-          uv run python /tmp/d.py 2>&1 | grep -E "^D |Error|Traceback|line " | cut -c1-900
+          uv run python labdiag_tmp.py 2>&1 | tail -40 | cut -c1-900
