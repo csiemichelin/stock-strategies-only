@@ -1,15 +1,20 @@
 name: Strategy Lab (point-in-time)
 
 # 用「當時的名單」驗證選股策略，並且每天更新模擬帳戶。資料全部來自證交所與公開資訊觀測站，不花 FinMind 額度。
-# 第一次要抓十年的每日全市場行情（約三小時，兩次請求之間固定間隔）；之後每次只補新的交易日，幾分鐘就跑完。
+# 第一次要抓十年的每日全市場行情（約三小時，兩次請求之間固定間隔）；之後每次只補新的交易日，一兩分鐘就跑完。
 on:
+  # 主要的觸發：每日選股（V3 Daily Signal，由外部排程準時觸發）跑完就接著跑。
+  # GitHub 自己的排程在這個 repo 常常晚好幾個小時（2026-11-20 第一次就沒準時），只當備援。
+  workflow_run:
+    workflows: ["V3 Daily Signal"]
+    types: [completed]
   schedule:
-    # 每個交易日台灣時間 20:10（當天的行情與月營收都公布之後）
+    # 備援：台灣時間 20:10。深夜才輪到的話不會推 LINE（pit.QUIET_HOURS）
     - cron: "10 12 * * 1-5"
   workflow_dispatch:
     inputs:
       notify:
-        description: "有換股或每週摘要時多推一則 LINE（排程執行時一律會推）"
+        description: "有換股或每週摘要時多推一則 LINE（自動執行時一律會推）"
         type: boolean
         default: false
 
@@ -22,10 +27,23 @@ concurrency:
 
 jobs:
   pit:
+    # 每日選股自己被 GitHub 的延遲排程叫起來的那次（通常在半夜，而且它自己會跳過）不用跟著跑
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 330
 
     steps:
+      - name: Wait for the closing data
+        if: github.event_name == 'workflow_run'
+        run: |
+          # 每日選股大約 14:40 跑完，證交所當天的收盤行情要再晚一點才齊：下午的話等到 16:05（台灣時間）再開始
+          target=$(TZ=Asia/Taipei date -d "16:05" +%s)
+          now=$(date +%s)
+          if [ "$(TZ=Asia/Taipei date +%-H)" -ge 13 ] && [ "$now" -lt "$target" ]; then
+            echo "wait $(( (target - now) / 60 )) minutes"
+            sleep $(( target - now ))
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -52,8 +70,10 @@ jobs:
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           PYTHONUNBUFFERED: "1"
         run: |
-          # 排程執行會推 LINE（到 Settings → Secrets and variables → Variables 設 LAB_NOTIFY=0 可以關掉）；手動執行要勾選才推
-          if { [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.LAB_NOTIFY }}" != "0" ]; } || [ "${{ inputs.notify }}" = "true" ]; then
+          # 自動執行會推 LINE（到 Settings → Secrets and variables → Variables 設 LAB_NOTIFY=0 可以關掉）；手動執行要勾選才推
+          auto=false
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_run" ]; then auto=true; fi
+          if { [ "$auto" = "true" ] && [ "${{ vars.LAB_NOTIFY }}" != "0" ]; } || [ "${{ inputs.notify }}" = "true" ]; then
             uv run python -m stock_strategies.pit --notify
           else
             uv run python -m stock_strategies.pit
