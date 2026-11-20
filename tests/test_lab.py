@@ -299,3 +299,21 @@ def test_annualised_return_uses_calendar_time_not_252_trading_days():
     stats = lab._stats(ret, ret, [days])
     assert stats["cagr_pct"] == pytest.approx(10.0, abs=0.05) and stats["excess_cagr_pct"] == 0
     assert lab.span_years(days) == pytest.approx(1.0, abs=0.01) and lab.span_years(days[:1]) > 0
+
+
+def test_rebalanced_control_really_is_equal_weight():
+    """檔數多的對照組如果不調回等權重，賣出的錢不夠買新進的，久了只剩少數幾檔——那就不是「等權重持有名單」了。"""
+    data = _data(stocks=12)
+    names = [s for s in data.stocks]
+    plan = {d: names[i % 3:] for i, d in enumerate(lab.month_starts(data.days))}  # 名單每個月有進有出
+    start, end = data.days[300], data.days[-1]
+    kept = lab.simulate(data, plan, start, end, len(names), initial=names, capital=1e8)
+    even = lab.simulate(data, plan, start, end, len(names), initial=names, capital=1e8, rebalance=True)
+    last_plan = plan[max(d for d in plan if d < end)]
+    assert set(even["positions"]) == set(last_plan)                      # 名單裡的每一檔都有
+    value = pd.Series({s: even["prices"][s] * n for s, n in even["positions"].items()})
+    weights = value / (value.sum() + even["cash"])
+    assert weights.max() / weights.min() < 1.6 and weights.max() < 0.14   # 調過之後大家差不多重（月中漲跌造成的差距而已）
+    drift = pd.Series({s: kept["prices"][s] * n for s, n in kept["positions"].items()})
+    assert drift.max() / drift.min() > weights.max() / weights.min()      # 不調的話比重差距比較大
+    assert even["trades_per_year"] > kept["trades_per_year"] and even["cost_pct_per_year"] > 0  # 調整是有成本的，照算

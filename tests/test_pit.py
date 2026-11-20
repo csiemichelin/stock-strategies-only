@@ -248,6 +248,24 @@ def test_a_rebalance_that_was_not_announced_in_time_is_announced_afterwards():
     assert told["told"]["revenue"] == "2026-11-11" and pit.line_message(late, told)[0] is None
 
 
+def test_notify_waits_for_daytime_before_pushing(monkeypatch):
+    """GitHub 的排程常晚好幾個小時：半夜才輪到的那次不推播，留給下次白天的執行。"""
+    from datetime import datetime
+
+    from stock_strategies import line_push, webstore
+
+    sent = []
+    monkeypatch.setattr(line_push, "line_enabled", lambda: True)
+    monkeypatch.setattr(line_push, "send_line", sent.append)
+    report = _report("none")
+    assert pit.notify(report, now=datetime(2026, 11, 21, 3, 30, tzinfo=lab.TZ)) is False
+    assert pit.notify(report, now=datetime(2026, 11, 20, 22, 5, tzinfo=lab.TZ)) is False
+    assert sent == [] and not (webstore.load(pit.TRACK, fresh=True) or {}).get("intro")   # 沒送，也沒記成送過
+    assert pit.notify(report, now=datetime(2026, 11, 23, 16, 15, tzinfo=lab.TZ)) is True
+    assert len(sent) == 1 and "策略實驗室" in sent[0] and webstore.load(pit.TRACK, fresh=True)["intro"] is True
+    assert pit.notify(report, now=datetime(2026, 11, 23, 16, 20, tzinfo=lab.TZ)) is False and len(sent) == 1  # 不重複
+
+
 def test_incomplete_revenue_stops_the_run_instead_of_ranking_on_partial_data(source):
     full = source["revenue"]
     source["revenue"] = {sid: {m: v for m, v in months.items() if m != "2021-03"} for sid, months in full.items()}
