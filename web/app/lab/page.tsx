@@ -42,7 +42,7 @@ export default function LabPage() {
         <Conclusion report={report} pit={pit} />
         {pit && <section className="space-y-6">
           <div><h2 className="text-xl font-semibold">一、用當時的名單重驗</h2>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">每個月底只用當天為止的資料排名單：上市普通股、近 {pit.liquidity_days ?? 60} 個交易日平均成交金額前 {pit.top ?? 100} 名。策略只能從當時的名單裡挑，後來下市的股票也照樣算，所以沒有「事後挑贏家」的問題。資料來自證交所與公開資訊觀測站，不花 FinMind 額度，每個交易日晚上更新。</p></div>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">每個月底只用當天為止的資料排名單：上市普通股、近 {pit.liquidity_days ?? 60} 個交易日平均成交金額前 {pit.top ?? 100} 名。策略只能從當時的名單裡挑，後來下市的股票也照樣算，所以沒有「事後挑贏家」的問題。資料來自證交所與公開資訊觀測站，不花 FinMind 額度，每個交易日收盤後更新。</p></div>
           <Report report={pit} pit />
         </section>}
         {report && <section className="space-y-6">
@@ -94,8 +94,8 @@ function Report({ report, pit = false, hasPit = false }: { report: LabReport; pi
           <td className={tone(b.cagr_pct)}>{pct(b.cagr_pct)}</td><td>—</td><td>—</td><td className="text-fall">{pct(b.mdd_pct, false)}</td><td>—</td><td>—</td><td>100%</td><td>—</td><td>—</td></tr>
         {u && <tr className="border-t border-line"><td className="py-2"><span style={{ color: UNIVERSE_COLOR }}>●</span> {u.name}
           <div className="max-w-xs text-xs leading-5 text-muted">{pit
-            ? <>對照組：每個月底把當時的前 {u.stocks} 名全部等權重買進，名單換了就跟著換。沒有事後挑名單，選股策略要贏過它才算真的會選。{u.other_tops?.length ? "（名單改成" + u.other_tops.map(o => "前 " + o.top + " 名年化 " + pct(o.cagr_pct)).join("、") + "）" : ""}</>
-            : <>對照組：現在名單裡的 {u.stocks} 檔個股全部等權重買進抱著。它贏 0050 的部分是「事後挑名單」的虛胖，不是選股能力。</>}</div></td>
+            ? <>對照組：每個月初把當時的前 {u.stocks} 名調成等權重——名單換了跟著換，留下來的也調回相同比重，成本照算。沒有事後挑名單，選股策略要贏過它才算真的會選。{u.other_tops?.length ? "（名單改成" + u.other_tops.map(o => "前 " + o.top + " 名年化 " + pct(o.cagr_pct)).join("、") + "）" : ""}</>
+            : <>對照組：每個月初把現在名單裡的個股（共 {u.stocks} 檔）調成等權重，成本照算。它贏 0050 的部分是「事後挑名單」的虛胖，不是選股能力。</>}</div></td>
           <td className={tone(u.cagr_pct)}>{pct(u.cagr_pct)}</td><td className={tone(u.excess_cagr_pct)}>{pct(u.excess_cagr_pct)}</td><td>—</td><td className="text-fall">{pct(u.mdd_pct, false)}</td><td>—</td><td>—</td><td>100%</td><td>—</td><td>—</td></tr>}
         {cands.map((c, i) => <tr key={c.id} className="border-t border-line align-top">
           <td className="py-2"><span style={{ color: COLORS[i % COLORS.length] }}>●</span> {c.name}
