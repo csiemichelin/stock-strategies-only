@@ -16,12 +16,13 @@ from __future__ import annotations
 import bisect
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pandas as pd
 
 from . import lab, twse
 
+START = "2016-09-22"     # 資料從這一天開始（固定，不跟著今天往後移——樣本外期間才會越來越長，而不是每天從前面掉一天）
 TOP = 100                # 名單大小
 OTHER_TOPS = (50, 200)   # 另外兩種名單大小：只用來看結論穩不穩，不拿來挑
 LIQUIDITY_DAYS = 60      # 用近 60 個交易日的平均成交金額排名
@@ -67,10 +68,9 @@ def rank_universe(quotes: pd.DataFrame, days: list[str], depth: int) -> dict:
     return ranked
 
 
-def build(years: int = lab.YEARS, depth: int | None = None) -> lab.Data:
+def build(start: str = START, depth: int | None = None) -> lab.Data:
     """抓齊（或讀快取）證交所資料、排出每個月底的當時名單，回傳實驗室引擎用的資料。"""
     depth = depth or max(TOP, *OTHER_TOPS)
-    start = (datetime.now() - timedelta(days=365 * years + 60)).strftime("%Y-%m-%d")
     cal = twse.calendar(start)
     quotes = twse.load_quotes([d for d, _ in cal])
     if quotes.empty:
@@ -278,13 +278,13 @@ def _track_after(days: list[str], save: bool) -> str:
     return state["after"]
 
 
-def run(data: lab.Data | None = None, years: int = lab.YEARS, save: bool = True,
+def run(data: lab.Data | None = None, start: str = START, save: bool = True,
         eval_floor: str = "2020-01-01", track_after: str | None = None) -> dict:
     """用當時名單把候選策略驗證一遍，回傳報告（save=True 時存到 webstore 給網頁、LINE 用）。"""
     from . import webstore
 
     t0 = time.time()
-    data = data or build(years)
+    data = data or build(start)
     days = data.days
     eval_start = max(eval_floor, (pd.Timestamp(days[0]) + pd.Timedelta(days=365 * 3 + 120)).strftime("%Y-%m-%d"))
     grid_start = days[min(len(days) - 1, lab.WARMUP_DAYS)]
@@ -507,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(description="策略實驗室（當時名單版）：資料來自證交所，不花 FinMind 額度")
     ap.add_argument("--if-due", type=int, default=0, help="上次報告在這麼多天內就不重跑")
-    ap.add_argument("--years", type=int, default=lab.YEARS)
+    ap.add_argument("--start", default=START, help="資料從哪一天開始（YYYY-MM-DD）")
     ap.add_argument("--notify", action="store_true", help="有換股或每週摘要時多推一則 LINE")
     args = ap.parse_args(argv)
     if args.if_due:
@@ -519,8 +519,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
         except Exception:  # noqa: BLE001 沒有舊報告就照跑
             pass
-    twse.download(args.years)  # 第一次要抓十年份（行情跟月營收同時抓）；平常只補新的
-    report = run(years=args.years)
+    twse.download(args.start)  # 第一次要抓十年份（行情跟月營收同時抓）；平常只補新的
+    report = run(start=args.start)
     _log(f"完成（{report['seconds']} 秒）")
     for line in summary(report):
         _log(line)

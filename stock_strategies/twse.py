@@ -415,9 +415,8 @@ def revenue_gaps(rev: dict[str, dict[str, float]], start_month: str, end_month: 
 # ---------------------------------------------------------------- 一次抓齊
 
 
-def download(years: int = 10) -> dict:
-    """把 years 年份的資料抓齊（已經有的不會重抓），回傳各項筆數。"""
-    start = (_now() - timedelta(days=365 * years + 60)).strftime("%Y-%m-%d")
+def download(start: str = "2016-09-22") -> dict:
+    """把 start（YYYY-MM-DD）以後的資料抓齊（已經有的不會重抓），回傳各項筆數。"""
     cal = calendar(start)
     _log(f"交易日 {len(cal)} 天（{cal[0][0]}～{cal[-1][0]}）")
     ex = exrights(start)
@@ -453,9 +452,9 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="抓證交所／公開資訊觀測站的歷史資料（不花 FinMind 額度）")
-    ap.add_argument("--years", type=int, default=10)
+    ap.add_argument("--start", default="2016-09-22", help="從哪一天開始抓（YYYY-MM-DD）")
     args = ap.parse_args(argv)
-    download(args.years)
+    download(args.start)
     return 0
 
 
