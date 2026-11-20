@@ -30,6 +30,7 @@ JUMP = 0.105             # 上市股票單日漲跌停 10%：超過就是參考�
 SLIP = 0.001             # 滑價測試：買賣各再讓 0.1%
 REPORT = "lab_pit_report"
 TRACK = "lab_track"      # 模擬帳戶從哪一天開始、LINE 通知到哪一次了
+QUIET_HOURS = (22, 7)    # 晚上 10 點到早上 7 點不推 LINE：GitHub 自己的排程常晚好幾個小時才跑，不要半夜吵人
 ORDER = ("none", "tentative", "strong")
 CANDIDATES = [c for c in lab.CANDIDATES if c["id"] in ("revenue", "combo", "trend")]
 
@@ -142,9 +143,9 @@ def _walk(data: lab.Data, top: int, frame: dict, slip: float = 0.0) -> dict:
                                                                      "b_ret"))
     data.top = top
     first = sorted(data.eligible(grid_start) or [])
-    # 對照組一檔只佔 1/top，本金放大 100 倍免得「買不到一股」或零股進位讓它吃虧
-    u_ret = lab.simulate(data, lab.plan_universe(data), grid_start, end, top, initial=first,
-                         capital=lab.CAPITAL * 100, slip=slip)["ret"].reindex(oos).fillna(0.0)
+    # 對照組：每個月初把當時名單調回等權重（留下來的也調）。一檔只佔 1/top，本金放大 100 倍免得零股進位讓它吃虧
+    u_ret = lab.simulate(data, lab.plan_universe(data), grid_start, end, top, initial=first, capital=lab.CAPITAL * 100,
+                         slip=slip, rebalance=True)["ret"].reindex(oos).fillna(0.0)
     out = []
     for cand in CANDIDATES:
         cid = cand["id"]
@@ -252,7 +253,7 @@ def _notes(data: lab.Data, bench: dict, universe: dict) -> list[str]:
     return [
         f"名單怎麼來：每個月底只用當天為止的資料，把上市普通股依近 {LIQUIDITY_DAYS} 個交易日的平均成交金額排名、取前 {TOP} 名；"
         "策略只能從當時的名單裡挑，後來下市或退出名單的股票當時在名單裡就照樣算。"
-        f"把這份當時名單等權重買進抱著，年化 {universe['cagr_pct']}%（同期 0050 是 {bench['cagr_pct']}%，"
+        f"每個月初把這份當時名單調成等權重（成本照算），年化 {universe['cagr_pct']}%（同期 0050 是 {bench['cagr_pct']}%，"
         f"{'多' if gap >= 0 else '少'} {abs(gap)} 個百分點）——沒有事後挑名單，這才是選股策略真正要贏的對照。",
         "訊號當天收盤後產生、隔天開盤價成交；手續費 0.1425%（未打折）與證交稅都有扣。"
         f"滑價另外測了一次（買賣各再讓 {SLIP * 100:.1f}%）；漲停買不到、跌停賣不掉的情況沒有模擬。",
@@ -472,8 +473,8 @@ def line_message(report: dict, state: dict, v32_excess: float | None = None) -> 
     return "\n".join(lines), new_state
 
 
-def notify(report: dict) -> bool:
-    """需要的話推一則 LINE（沒設定 LINE 就只印出來）。"""
+def notify(report: dict, now: datetime | None = None) -> bool:
+    """需要的話推一則 LINE（沒設定 LINE 就只印出來）。深夜不送，留到下次白天執行時再送。"""
     from . import webstore
     from .line_push import line_enabled, send_line
 
@@ -487,6 +488,10 @@ def notify(report: dict) -> bool:
     text, new_state = line_message(report, state, v32)
     if not text:
         _log("今天沒有需要另外通知的事")
+        return False
+    hour = (now or datetime.now(lab.TZ)).hour
+    if hour >= QUIET_HOURS[0] or hour < QUIET_HOURS[1]:
+        _log("現在是深夜，這則通知先不送，下次白天執行時再送")
         return False
     _log("LINE 訊息：\n" + text)
     if line_enabled():

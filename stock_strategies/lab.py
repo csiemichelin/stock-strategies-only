@@ -392,11 +392,13 @@ def _result(dates: list, equity: list, exposure: list, trades: int, costs: float
 
 
 def simulate(data: Data, plan: dict, start: str, end: str, slots: int, initial: list | None = None,
-             capital: float = CAPITAL, slip: float = 0.0, sizes: dict | None = None) -> dict:
+             capital: float = CAPITAL, slip: float = 0.0, sizes: dict | None = None, rebalance: bool = False) -> dict:
     """排名型策略的引擎。plan：{決策日: [目標股票]}，決策日收盤後決定、下一個交易日開盤執行：
     不在名單裡的全部賣掉，新進名單的每檔買「總資產 ÷ slots」；留在名單裡的不動（少一點交易成本）。
     slip：滑價，買的時候比開盤價貴這個比例、賣的時候便宜這個比例。
     sizes：{決策日: 檔數}，那一次換股改用這個檔數（中途換參數時用）。
+    rebalance：留在名單裡的也調回「總資產 ÷ slots」（多的賣掉、少的補足）——真正的等權重，對照組用。
+    不調的話，檔數一多（例如 100 檔）賣出的錢常常不夠買新進的，久了會變成只抱少數幾檔漲很多的。
     回傳的 positions／cash／pending 是最後一天收盤後的狀態（pending：已決定、下一個交易日開盤要換成的名單）。"""
     cash, pos, last = float(capital), {}, {}
     pending = (initial, slots) if initial is not None else None
@@ -415,12 +417,29 @@ def simulate(data: Data, plan: dict, start: str, end: str, slots: int, initial: 
                 costs += fee
                 trades += 1
             total = cash + sum(last.get(s, 0.0) * n for s, n in pos.items())
+            goal = total / n_slots
+            if rebalance:  # 留下來的超過目標就先賣掉多的，錢才夠補不足的和新進的
+                for sid in [s for s in pos if s in targets]:
+                    price = data.o[sid].get(day)
+                    if price is None or not price > 0:
+                        continue
+                    extra = pos[sid] - int(goal // price)
+                    if extra <= 0:
+                        continue
+                    proceeds, fee = sim.sell_proceeds(sid, price * (1 - slip), extra)
+                    pos[sid] -= extra
+                    if not pos[sid]:
+                        del pos[sid]
+                    cash += proceeds
+                    costs += fee
+                    trades += 1
             for sid in targets:
                 price = data.o.get(sid, {}).get(day)
-                if sid in pos or price is None or not price > 0:
+                if price is None or not price > 0 or (sid in pos and not rebalance):
                     continue
                 price *= 1 + slip
-                shares = int(min(cash, total / n_slots) // (price * (1 + sim.FEE_RATE)))
+                have = pos.get(sid, 0)
+                shares = int(min(cash, goal - have * price) // (price * (1 + sim.FEE_RATE)))
                 while shares > 0 and sim.buy_cost(price, shares)[0] > cash:
                     shares -= 1
                 if shares <= 0:
@@ -429,7 +448,7 @@ def simulate(data: Data, plan: dict, start: str, end: str, slots: int, initial: 
                 cash -= cost
                 costs += fee
                 trades += 1
-                pos[sid] = shares
+                pos[sid] = have + shares
         for sid in pos:
             price = data.c[sid].get(day)
             if price is not None and price > 0:
