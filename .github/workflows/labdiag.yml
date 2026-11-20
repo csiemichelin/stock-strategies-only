@@ -1,0 +1,75 @@
+name: Lab Diagnose (temporary)
+
+# 手動執行：用快取裡的證交所資料檢查實驗室的數字（不抓新資料、不存報告、不推 LINE）
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.11"
+      - run: uv sync
+      - uses: actions/cache/restore@v4
+        with:
+          path: .cache/twse
+          key: twse-pit-none
+          restore-keys: twse-pit-
+      - name: Diagnose
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          cat > /tmp/d.py <<'EOF'
+          import numpy as np
+          import pandas as pd
+          from stock_strategies import lab, pit, twse
+          twse.REUSE_MINUTES = 10 ** 6  # 只讀快取
+          twse._log = lambda m: None
+          pit._log = lambda m: None
+          data = pit.build()
+          days = data.days
+          last, prev = days[-1], days[-2]
+          print("D days", days[0], last, len(days))
+          q = twse.load_quotes(days[-4:])
+          print("D raw0050", q[q["id"] == "0050"][["date", "open", "close", "flag"]].values.tolist())
+          print("D adj0050", data.px["0050"].tail(4)[["date", "open", "close"]].round(2).values.tolist())
+          data.top = 100
+          members = sorted(data.eligible(last))
+          r = pd.Series({s: data.c[s].get(last, np.nan) / data.c[s].get(prev, np.nan) - 1 for s in members})
+          print("D members", len(members), "no-trade", int(r.isna().sum()), "mean%", round(r.mean() * 100, 2), "min%", round(r.min() * 100, 2),
+                "max%", round(r.max() * 100, 2), "limit-down", int((r < -0.095).sum()), "up", int((r > 0).sum()))
+          grid = days[lab.WARMUP_DAYS]
+          first = sorted(data.eligible(grid))
+          u = lab.simulate(data, lab.plan_universe(data), grid, last, 100, initial=first, capital=lab.CAPITAL * 100)
+          b = lab.simulate(data, {}, grid, last, 1, initial=[lab.BENCH])
+          for d in ["2020-01-17", "2020-01-20", "2020-01-30", "2020-01-31"] + days[-4:]:
+              print("D ret", d, "0050", round(float(b["ret"].get(d, np.nan)) * 100, 2), "EW100", round(float(u["ret"].get(d, np.nan)) * 100, 2))
+          def tot(ret, a, z):
+              x = ret[(ret.index >= a) & (ret.index <= z)]
+              return round(float((1 + x).prod()), 4)
+          for a in ("2020-01-20", "2020-01-30"):
+              for z in (prev, last):
+                  print("D total", a, z, "0050", tot(b["ret"], a, z), "EW100", tot(u["ret"], a, z))
+          val = pd.Series({s: u["prices"][s] * n for s, n in u["positions"].items()}).sort_values(ascending=False)
+          w = val / (val.sum() + u["cash"])
+          day = pd.Series({s: data.c[s].get(last, np.nan) / data.c[s].get(prev, np.nan) - 1 for s in w.index})
+          print("D account positions", len(w), "cash%", round(u["cash"] / (val.sum() + u["cash"]) * 100, 2), "in-universe", int(sum(s in set(members) for s in w.index)),
+                "top", {s: round(float(w[s]) * 100, 1) for s in w.index[:8]})
+          contrib = (w * day).dropna().sort_values()
+          print("D contrib sum%", round(float(contrib.sum()) * 100, 2), "no-trade weight%", round(float(w[day.isna()].sum()) * 100, 2),
+                "worst", {s: [round(float(w[s]) * 100, 1), round(float(day[s]) * 100, 1)] for s in contrib.index[:8]})
+          eq = (1 + u["ret"]).cumprod()
+          peak = eq.cummax()
+          print("D EW drawdown now%", round(float(eq.iloc[-1] / peak.iloc[-1] - 1) * 100, 2), "peak date", str(eq.idxmax()), "prev-day dd%", round(float(eq.iloc[-2] / peak.iloc[-2] - 1) * 100, 2))
+          eb = (1 + b["ret"]).cumprod()
+          print("D 0050 drawdown now%", round(float(eb.iloc[-1] / eb.cummax().iloc[-1] - 1) * 100, 2), "peak date", str(eb.idxmax()))
+          print("D taiex", [[d, float(data.index[d])] for d in days[-4:]])
+          EOF
+          uv run python /tmp/d.py 2>&1 | grep -E "^D |Error|Traceback|line " | cut -c1-900
