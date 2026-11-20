@@ -142,10 +142,8 @@ def _walk(data: lab.Data, top: int, frame: dict, slip: float = 0.0) -> dict:
     days, fold_days, oos, grid_start, end, b_ret = (frame[k] for k in ("days", "folds", "oos", "grid_start", "end",
                                                                      "b_ret"))
     data.top = top
-    first = sorted(data.eligible(grid_start) or [])
-    # 對照組：每個月初把當時名單調回等權重（留下來的也調）。一檔只佔 1/top，本金放大 100 倍免得零股進位讓它吃虧
-    u_ret = lab.simulate(data, lab.plan_universe(data), grid_start, end, top, initial=first, capital=lab.CAPITAL * 100,
-                         slip=slip, rebalance=True)["ret"].reindex(oos).fillna(0.0)
+    # 對照組：每個月初把當時名單調回等權重（留下來的也調），成本照算
+    u_ret = lab.universe_returns(data, grid_start, end, slip=slip).reindex(oos).fillna(0.0)
     out = []
     for cand in CANDIDATES:
         cid = cand["id"]

@@ -589,12 +589,23 @@ def plan_timing(data: Data, window: int) -> dict:
 
 
 def plan_universe(data: Data) -> dict:
-    """對照組：名單裡的個股全部等權重買進抱著（新掛牌的在下個月初補進來；用當時名單時，每個月初跟著名單換）。"""
+    """對照組的名單：每個月初，名單裡當天有交易的個股（新掛牌的從下個月初算進來；用當時名單時跟著名單換）。"""
     plan = {}
     for d in month_starts(data.days):
         allowed = data.eligible(d)
         plan[d] = [s for s in data.stocks if d in data.c[s] and (allowed is None or s in allowed)]
     return plan
+
+
+def universe_returns(data: Data, start: str, end: str, slip: float = 0.0) -> pd.Series:
+    """對照組的每日報酬：每個月初把名單調成等權重（留下來的也調回相同比重），手續費、證交稅照算。
+    一檔只佔一點點，所以本金放大 100 倍，免得零股進位讓它吃虧。"""
+    plan = plan_universe(data)
+    allowed = data.eligible(start)
+    first = [s for s in data.stocks if start in data.c[s] and (allowed is None or s in allowed)]
+    sizes = {d: max(1, len(names)) for d, names in plan.items()}
+    return simulate(data, plan, start, end, max(1, len(first)), initial=first, capital=CAPITAL * 100, slip=slip,
+                    sizes=sizes, rebalance=True)["ret"]
 
 
 PLANNERS = {"revenue": (plan_revenue, lambda cfg: cfg[1]), "combo": (plan_combo, lambda cfg: cfg[1]),
@@ -712,7 +723,7 @@ def _curve(ret: pd.Series) -> list:
 def _notes(data: Data, bench_cagr: float, universe_cagr: float) -> list[str]:
     gap = round(universe_cagr - bench_cagr, 2)
     notes = [
-        "觀察清單用的是「現在」的名單（市值前 100 大等），等於事後挑贏家：把這份名單的個股等權重買進抱著，"
+        "觀察清單用的是「現在」的名單（市值前 100 大等），等於事後挑贏家：每個月初把這份名單的個股調成等權重，"
         f"年化 {universe_cagr}%（同期 0050 是 {bench_cagr}%）"
         + (f"，多出來的 {gap} 個百分點是事後挑名單的虛胖，不是選股能力。" if gap > 0 else "。")
         + "所以選股型策略要同時贏過 0050 和這個對照才算「有跡象」，而且要換成當時的名單重驗之後才能算證據。",
@@ -741,9 +752,7 @@ def run(data: Data | None = None, years: int = YEARS, save: bool = True, eval_fl
     oos = [d for fd in fold_days for d in fd]
     end = days[-1]
     b_ret = simulate(data, {}, grid_start, end, 1, initial=[BENCH])["ret"].reindex(oos).fillna(0.0)
-    held = [s for s in data.stocks if grid_start in data.c[s]]
-    u_ret = simulate(data, plan_universe(data), grid_start, end, max(1, len(data.stocks)), initial=held,
-                     capital=CAPITAL * 100)["ret"].reindex(oos).fillna(0.0)  # 一檔只佔一點點：本金放大免得零股進位吃虧
+    u_ret = universe_returns(data, grid_start, end).reindex(oos).fillna(0.0)
     default = loader.get_strategy("default") or {"id": "default", "name": "預設策略", "params": {}}
     out = []
     for cand in CANDIDATES:
