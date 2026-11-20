@@ -317,3 +317,19 @@ def test_rebalanced_control_really_is_equal_weight():
     drift = pd.Series({s: kept["prices"][s] * n for s, n in kept["positions"].items()})
     assert drift.max() / drift.min() > weights.max() / weights.min()      # 不調的話比重差距比較大
     assert even["trades_per_year"] > kept["trades_per_year"] and even["cost_pct_per_year"] > 0  # 調整是有成本的，照算
+
+
+def test_universe_control_is_fully_invested_in_whatever_is_listed():
+    """對照組：每個月初等權重持有「當時已經掛牌」的名單個股（還沒掛牌的不佔位置），成本照算。"""
+    data = _data(stocks=8)
+    late = data.stocks[-1]
+    cut = data.days[700]
+    data.c[late] = {d: v for d, v in data.c[late].items() if d >= cut}   # 最後一檔在第 700 天才掛牌
+    data.o[late] = {d: v for d, v in data.o[late].items() if d >= cut}
+    ret = lab.universe_returns(data, data.days[300], data.days[-1])
+    assert len(ret) == len(data.days) - 300 and abs(ret).max() < 0.2
+    before = lab.simulate(data, lab.plan_universe(data), data.days[300], data.days[690], 7,
+                          initial=data.stocks[:-1], capital=1e8, rebalance=True)
+    assert late not in before["positions"] and before["exposure"].iloc[-1] > 0.97   # 沒掛牌的不留現金等它
+    plan = lab.plan_universe(data)
+    assert late not in plan[max(d for d in plan if d < cut)] and late in plan[min(d for d in plan if d > cut)]
